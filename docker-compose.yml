@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "35432:35432"
+    environment:
+      POSTGRES_USER: jensenlyz
+      POSTGRES_PASSWORD: 1014
+      POSTGRES_DB: paperagent
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - paperagent-net
+
+  es:
+    image: elasticsearch:8.11.1
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "39200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - paperagent-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: paperagent-minio
+    ports:
+      - "39000:9000"   # MinIO API 端口
+      - "39001:9001"   # MinIO Web 控制台端口
+    environment:
+      MINIO_ROOT_USER: paperagent
+      MINIO_ROOT_PASSWORD: paperagent123
+    volumes:
+      - minio_data:/data
+    networks:
+      - paperagent-net
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "18000:18000"
+    environment:
+      - DATABASE_URL=postgresql://jensenlyz:1014@db:35432/paperagent
+      - ELASTICSEARCH_URL=http://es:9200
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=paperagent
+      - MINIO_SECRET_KEY=paperagent123
+      - MINIO_BUCKET=paperagent-files
+      - OPENAI_API_KEY=${OPENAI_API_KEY} # For LiteLLM if needed, or other keys
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+      - es
+      - minio
+    networks:
+      - paperagent-net
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+networks:
+  paperagent-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  es_data:
+  minio_data:
+

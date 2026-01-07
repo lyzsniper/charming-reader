@@ -1,0 +1,276 @@
+# CharMing Reader .gitignore
+# 为 Python + React 全栈项目定制
+
+# ================================
+# Python 相关
+# ================================
+# 字节码文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+backend/venv/
+frontend/venv/
+
+# Python 分发和打包
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# PyInstaller
+*.spec
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# ================================
+# Node.js / 前端相关
+# ================================
+# 依赖目录
+node_modules/
+jspm_packages/
+
+# 构建输出
+dist/
+dist-ssr/
+build/
+.next/
+out/
+
+# 日志文件
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Vite
+.vite/
+*.local
+
+# 缓存
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+
+# ================================
+# 环境变量和配置
+# ================================
+# 敏感信息
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# API 密钥和证书
+*.pem
+*.key
+*.crt
+secrets/
+
+# ================================
+# 数据库文件
+# ================================
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# PostgreSQL
+*.dump
+
+# Alembic
+alembic/versions/__pycache__/
+
+# ================================
+# Docker 相关
+# ================================
+# Docker volumes
+volumes/
+docker-volumes/
+
+# Docker compose override
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ================================
+# 上传文件和临时文件
+# ================================
+# 用户上传的文件
+backend/app/uploads/
+backend/app/uploads_rag/
+uploads/
+uploads_rag/
+temp/
+tmp/
+*.tmp
+
+# 日志文件
+*.log
+logs/
+*.log.*
+
+# ================================
+# IDE 和编辑器
+# ================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (PyCharm, WebStorm, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ================================
+# 操作系统文件
+# ================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ================================
+# 测试和覆盖率
+# ================================
+# Coverage reports
+.coverage
+coverage/
+*.cover
+.hypothesis/
+
+# Unit test / integration test
+.pytest_cache/
+test-results/
+playwright-report/
+test_output/
+
+# ================================
+# 其他工具
+# ================================
+# uv (Python package manager)
+.uv/
+
+# Poetry
+poetry.lock
+
+# Ruff
+.ruff_cache/
+
+# MinIO 本地存储（如果在本地测试）
+minio-data/
+
+# Elasticsearch 数据
+es-data/
+elasticsearch-data/
+
+# PostgreSQL 数据
+pg-data/
+postgres-data/
+
+# ================================
+# 项目特定
+# ================================
+# Genkit 缓存
+.genkit/
+
+# 临时文档处理文件
+*.md.tmp
+*.pdf.tmp
+
+# 备份文件
+*.bak
+*.backup
+*.old
+
+# 编译的前端资源
+frontend/dist/
+frontend/build/
+
+# 本地测试文件
+test_*.py
+*_test.py
+test_output/
+
+# 文档草稿
+docs/draft/
+docs/TODO.md
+
+# 本地配置
+local_config.py
+local_settings.py
+
+# 终端历史
+.terminals/
+terminals/
+
