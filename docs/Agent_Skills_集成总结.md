@@ -4,6 +4,145 @@
 
 PaperAgent 已成功集成 Anthropic Agent Skills 技术，实现了模块化的专业能力系统。本文档总结了集成的主要成果、系统架构和使用方法。
 
+## Agent Skills 技术原理
+
+### 什么是 Agent Skills？
+
+Agent Skills 是 Anthropic 提出的开放标准，用于为 AI Agent 提供模块化的专业能力。它通过将专业知识封装为可复用的技能包，让 Agent 能够根据任务需求动态加载和使用不同的专业能力。
+
+### 核心概念
+
+#### 1. 技能定义
+
+每个技能是一个包含详细指令的 Markdown 文件（`SKILL.md`），采用标准格式：
+
+```yaml
+---
+name: skill-name              # 技能唯一标识
+description: 技能描述          # 简短描述，用于匹配
+triggers:                    # 触发词列表
+  - 关键词1
+  - 关键词2
+version: 1.0.0              # 版本号
+---
+
+# 技能内容（详细的指令和指南）
+这里是技能的完整内容，包含：
+- 使用场景说明
+- 操作步骤
+- 最佳实践
+- 示例代码
+...
+```
+
+#### 2. 动态加载机制
+
+技能系统采用**懒加载（Lazy Loading）**策略：
+
+1. **启动阶段**：仅扫描技能目录，加载元数据（~100 tokens/技能）
+2. **匹配阶段**：根据用户查询匹配相关技能
+3. **激活阶段**：按需加载完整技能内容（~3000 tokens/技能）
+4. **注入阶段**：将技能内容合并到 Agent 的 instruction 中
+
+#### 3. 智能匹配算法
+
+系统通过多种方式匹配技能：
+
+- **触发词匹配**：O(1) 快速查找，基于关键词索引
+- **语义相似度**：基于技能描述和用户查询的相似性
+- **自动激活**：无需用户手动指定，系统自动识别需求
+
+### 工作原理流程图
+
+```
+用户查询
+    ↓
+触发词匹配 / 语义匹配
+    ↓
+找到相关技能（最多2个）
+    ↓
+激活技能（加载完整内容）
+    ↓
+技能内容注入 Agent instruction
+    ↓
+Agent 使用技能能力执行任务
+    ↓
+返回结果
+```
+
+### 技术实现方式
+
+#### 不需要特定框架
+
+**重要**：Agent Skills 是一个**开放标准**，不依赖任何特定框架。你可以用任何方式实现：
+
+1. **技能存储**：Markdown 文件（`.claude/skills/*/SKILL.md`）
+2. **元数据解析**：使用 PyYAML 解析 frontmatter
+3. **内容管理**：Python 代码管理技能加载和激活
+
+#### 可以直接传入模型使用
+
+Agent Skills 的本质是**指令注入**：
+
+- 将技能内容作为 instruction/prompt 的一部分传给模型
+- 任何支持 instruction/prompt 的模型都可以使用
+- 无需特殊的框架或工具
+
+#### 简化实现示例
+
+```python
+# 方式一：使用框架（当前项目使用 Google ADK）
+from skills.manager import skills_manager
+
+# 获取激活的技能内容
+skills_prompt = skills_manager.get_skills_prompt_extension()
+
+# 合并到 Agent instruction
+academic_agent = Agent(
+    name="academic_researcher",
+    model=model,
+    instruction=base_instruction + skills_prompt,  # 技能内容在这里
+)
+
+# 方式二：直接调用模型（无需框架）
+from skills.manager import skills_manager
+
+# 获取技能内容
+skills_prompt = skills_manager.get_skills_prompt_extension()
+
+# 直接构建 prompt
+full_prompt = f"""
+{base_instruction}
+
+{skills_prompt}  # 技能内容在这里
+
+用户查询：{user_query}
+"""
+
+# 直接调用模型
+response = model.generate(full_prompt)
+```
+
+### 项目实现架构
+
+本项目实现了完整的技能管理系统：
+
+```
+.claude/skills/              # 技能存储层
+    ├── paper-analysis/
+    │   └── SKILL.md
+    └── ...
+
+backend/app/skills/          # 运行时系统层
+    ├── loader.py           # 技能加载器
+    ├── registry.py         # 技能注册表
+    ├── activator.py        # 技能激活器
+    └── manager.py          # 统一管理接口
+
+backend/app/agents/         # Agent 集成层
+    └── flow.py            # Agent 使用技能
+```
+
 ## 完成的工作
 
 ### ✅ 第一阶段：技能库创建
@@ -155,6 +294,104 @@ SKILLS_MAX_CONCURRENT: int = 3                  # 最大并发数
 - 技能间可以协作但不强依赖
 - 易于添加、更新和删除技能
 
+## 如何使用 Agent Skills
+
+### 方式一：自动激活（推荐）
+
+系统会根据用户查询自动匹配并激活相关技能，无需手动操作：
+
+```python
+# 用户查询
+"帮我分析这篇论文的研究方法"
+
+# 系统自动执行：
+# 1. 匹配触发词："分析"、"论文"、"研究方法"
+# 2. 自动激活 paper-analysis 技能
+# 3. 技能指令自动添加到 Agent 上下文
+# 4. Agent 按照技能指南执行任务
+```
+
+**配置**：在 `backend/app/core/config.py` 中设置 `SKILLS_AUTO_ACTIVATION = True`
+
+### 方式二：通过工具函数手动激活
+
+Agent 可以调用工具函数来管理技能，这些工具已集成到 Agent 的工具列表中：
+
+```python
+# 在 backend/app/tools/definitions.py 中定义的工具：
+
+# 1. 列出所有可用技能
+list_available_skills()  
+# 返回：所有技能的列表，包括名称、描述、状态等
+
+# 2. 激活指定技能
+activate_skill("paper-analysis")  
+# 返回：激活状态和技能信息
+
+# Agent 可以在对话中调用这些工具：
+# 用户："有哪些可用的技能？"
+# Agent：调用 list_available_skills() 并返回结果
+```
+
+### 方式三：通过 API 接口
+
+提供了完整的 REST API 接口，支持外部系统集成：
+
+```python
+# REST API 端点（backend/app/api/endpoints.py）
+
+# 列出所有技能
+GET /api/skills
+
+# 获取技能详情
+GET /api/skills/{name}
+
+# 激活技能
+POST /api/skills/{name}/activate
+
+# 停用技能
+POST /api/skills/{name}/deactivate
+
+# 获取激活的技能
+GET /api/skills/active
+
+# 推荐技能（基于查询）
+POST /api/skills/suggest
+Body: {"message": "用户查询"}
+
+# 系统统计
+GET /api/skills/statistics
+```
+
+### 方式四：编程方式使用
+
+在代码中直接使用技能管理器：
+
+```python
+from skills.manager import skills_manager
+
+# 1. 列出所有技能
+all_skills = skills_manager.list_all_skills()
+
+# 2. 根据查询自动激活
+activated = skills_manager.auto_activate_for_query(
+    query="分析论文",
+    max_skills=2
+)
+
+# 3. 手动激活技能
+success = skills_manager.activate_skill("paper-analysis")
+
+# 4. 获取激活的技能内容（用于构建 prompt）
+skills_prompt = skills_manager.get_skills_prompt_extension()
+
+# 5. 获取技能推荐
+suggestions = skills_manager.suggest_skills(
+    query="格式化引用",
+    top_k=3
+)
+```
+
 ## 使用示例
 
 ### 场景 1：自动激活
@@ -297,20 +534,84 @@ SKILLS_MAX_CONCURRENT: int = 3                  # 最大并发数
 
 ## 依赖与兼容性
 
-### 必需依赖
+### 是否需要依赖框架？
 
+**答案：不需要特定框架**
+
+Agent Skills 是一个**开放标准**，不依赖任何特定的 Agent 框架。你可以：
+
+1. **使用现有框架**（如 Google ADK、LangChain 等）
+2. **直接调用模型**（如 OpenAI API、Anthropic API 等）
+3. **自定义实现**（任何支持 prompt/instruction 的系统）
+
+### 核心依赖（最小化）
+
+实现 Agent Skills 系统只需要：
+
+```python
+# 必需依赖
 - Python 3.10+
-- FastAPI
-- PyYAML（新增）
-- Google ADK
-- LiteLLM
+- PyYAML          # 解析技能元数据（YAML frontmatter）
+
+# 可选依赖（根据你的使用场景）
+- FastAPI         # 如果提供 REST API
+- Google ADK      # 如果使用 Google ADK 框架
+- LiteLLM         # 如果使用 LiteLLM 调用模型
+- 其他 LLM SDK    # 根据你使用的模型提供商
+```
+
+### 项目当前使用的技术栈
+
+本项目使用了以下技术，但**不是必需的**：
+
+- **Google ADK**：Agent 框架（可以替换为其他框架或直接调用模型）
+- **LiteLLM**：统一的 LLM 调用接口（可以替换为其他 SDK）
+- **FastAPI**：REST API 框架（如果不需要 API 可以移除）
 
 ### 兼容性
 
-- ✅ Cursor IDE
-- ✅ Claude Code
-- ✅ GitHub Copilot（通过 AGENTS.md）
-- ✅ 任何支持 Agent Skills 规范的工具
+Agent Skills 标准兼容以下工具和平台：
+
+- ✅ **Cursor IDE**：自动发现 `.claude/skills/` 目录
+- ✅ **Claude Code**：原生支持 Agent Skills
+- ✅ **GitHub Copilot**：通过 `AGENTS.md` 文件
+- ✅ **任何支持 Agent Skills 规范的工具**
+
+### 如何直接使用模型（不依赖框架）
+
+如果你不想使用框架，可以直接这样实现：
+
+```python
+# 1. 导入技能管理器
+from skills.manager import skills_manager
+
+# 2. 根据查询自动激活技能
+skills_manager.auto_activate_for_query(user_query, max_skills=2)
+
+# 3. 获取激活的技能内容
+skills_prompt = skills_manager.get_skills_prompt_extension()
+
+# 4. 构建完整 prompt
+full_prompt = f"""
+{base_instruction}
+
+{skills_prompt}
+
+用户查询：{user_query}
+"""
+
+# 5. 直接调用模型（示例：使用 OpenAI）
+import openai
+response = openai.chat.completions.create(
+    model="gpt-4",
+    messages=[
+        {"role": "system", "content": full_prompt},
+        {"role": "user", "content": user_query}
+    ]
+)
+```
+
+**关键点**：技能内容就是文本指令，可以插入到任何模型的 prompt 中。
 
 ## 总结
 

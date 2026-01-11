@@ -3,7 +3,7 @@ RAG 底层模块 - 纯粹的文档解析、分块、向量化功能
 不包含业务逻辑，供上层 service 调用
 """
 import os
-from typing import List, Optional
+from typing import List, Optional, Union
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, StorageContext, Document as LlamaDocument
 from llama_index.vector_stores.elasticsearch import ElasticsearchStore
 from llama_index.embeddings.litellm import LiteLLMEmbedding
@@ -13,6 +13,7 @@ from llama_index.core.schema import TextNode
 from markitdown import MarkItDown
 import litellm
 from core.config import settings
+from .chunkers import chunk_text as chunk_text_unified, ChunkerConfig, ChunkerType
 
 # Configure Global Settings
 # Use LiteLLM for embeddings, which supports multiple providers including OpenAI, Azure, Bedrock, etc.
@@ -74,28 +75,59 @@ def convert_pdf_to_markdown(file_path: str) -> str:
     return result.text_content
 
 
-def chunk_text(text: str, chunk_size: int = 1024, chunk_overlap: int = 100) -> List[str]:
+def chunk_text(
+    text: str, 
+    chunk_size: int = 1024, 
+    chunk_overlap: int = 100,
+    chunker_type: Union[ChunkerType, str] = ChunkerType.SENTENCE,
+    **chunker_kwargs
+) -> List[str]:
     """
-    智能分块，使用 LlamaIndex 的 SentenceSplitter
-    按照句子边界分块，保持语义完整性
+    智能分块，支持多种分块策略
     
     Args:
         text: 要分块的文本
-        chunk_size: 分块大小
+        chunk_size: 分块大小（token 或字符数，取决于分块器）
         chunk_overlap: 重叠大小
+        chunker_type: 分块器类型，可选值：
+            - "sentence": 句子分块器（默认）
+            - "token": Token 分块器
+            - "code": 代码分块器（需要 language 参数）
+            - "markdown": Markdown 分块器
+            - "semantic": 语义分块器（需要 embed_model 或使用全局 Settings.embed_model）
+            - "sentence_window": 句子窗口分块器
+            - "hierarchical": 层级分块器
+            - "html": HTML 分块器
+            - "json": JSON 分块器
+            - "simple_file": 简单文件分块器
+            - "custom": 自定义分块器
+        **chunker_kwargs: 其他分块器特定参数，例如：
+            - language: 代码分块器的编程语言
+            - buffer_size: 语义分块器的缓冲区大小
+            - window_size: 句子窗口分块器的窗口大小
+            - chunk_sizes: 层级分块器的分块大小列表
+            - html_tags: HTML 分块器的标签列表
         
     Returns:
         List[str]: 分块后的文本列表
+        
+    Examples:
+        >>> # 使用默认句子分块器
+        >>> chunks = chunk_text(text, chunk_size=1024, chunk_overlap=100)
+        
+        >>> # 使用代码分块器
+        >>> chunks = chunk_text(text, chunker_type="code", language="python")
+        
+        >>> # 使用语义分块器
+        >>> chunks = chunk_text(text, chunker_type="semantic", buffer_size=1)
     """
-    splitter = SentenceSplitter(
+    return chunk_text_unified(
+        text=text,
+        chunker_type=chunker_type,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        paragraph_separator="\n\n",
-        secondary_chunking_regex="[^,.;。？！]+[,.;。？！]?"
+        **chunker_kwargs
     )
-    
-    chunks = splitter.split_text(text)
-    return chunks
 
 
 def generate_embeddings(
@@ -193,13 +225,23 @@ def store_nodes_to_es(nodes: List[TextNode]) -> int:
 
 # ============ 完整流程方法（无业务逻辑）============
 
-def ingest_file(file_path: str):
+def ingest_file(
+    file_path: str,
+    chunker_type: Union[ChunkerType, str] = ChunkerType.SENTENCE,
+    chunk_size: int = 1024,
+    chunk_overlap: int = 100,
+    **chunker_kwargs
+):
     """
     完整的文件摄取流程（无业务逻辑版本）
     适用于纯 RAG 场景：读取文件 -> 分块 -> 向量化 -> 存储到 ES
     
     Args:
         file_path: 文件路径
+        chunker_type: 分块器类型，默认为 "sentence"
+        chunk_size: 分块大小
+        chunk_overlap: 重叠大小
+        **chunker_kwargs: 其他分块器特定参数
         
     Returns:
         str: 处理结果消息
@@ -217,8 +259,20 @@ def ingest_file(file_path: str):
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
     # 3. Parse and Index
-    # Use SentenceSplitter for chunking
-    splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=100)
+    # 创建分块器配置并获取 NodeParser
+    from .chunkers import ChunkerFactory, ChunkerConfig
+    
+    config = ChunkerConfig(
+        chunker_type=chunker_type,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        **chunker_kwargs
+    )
+    chunker = ChunkerFactory.create_chunker(config)
+    splitter = chunker.get_node_parser()
+    
+    if splitter is None:
+        raise ValueError(f"分块器类型 {chunker_type} 不支持 NodeParser，请使用其他方法")
     
     # from_documents handles parsing (using splitter in transformations if provided, 
     # but here we can pass it globally or in the call)
@@ -237,7 +291,9 @@ def process_file_to_chunks_and_embeddings(
     file_path: str,
     chunk_size: int = 1024,
     chunk_overlap: int = 100,
-    embedding_model: str = "text-embedding-v3"
+    embedding_model: str = "text-embedding-v3",
+    chunker_type: Union[ChunkerType, str] = ChunkerType.SENTENCE,
+    **chunker_kwargs
 ) -> tuple[str, List[str], List[List[float]]]:
     """
     完整的文件处理流程（返回中间结果，不存储）
@@ -248,6 +304,8 @@ def process_file_to_chunks_and_embeddings(
         chunk_size: 分块大小
         chunk_overlap: 重叠大小
         embedding_model: 向量模型
+        chunker_type: 分块器类型，默认为 "sentence"
+        **chunker_kwargs: 其他分块器特定参数
         
     Returns:
         tuple: (markdown_text, chunks, embeddings)
@@ -256,7 +314,13 @@ def process_file_to_chunks_and_embeddings(
     markdown_text = convert_pdf_to_markdown(file_path)
     
     # 2. 分块
-    chunks = chunk_text(markdown_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunks = chunk_text(
+        markdown_text, 
+        chunk_size=chunk_size, 
+        chunk_overlap=chunk_overlap,
+        chunker_type=chunker_type,
+        **chunker_kwargs
+    )
     
     # 3. 生成向量
     embeddings = generate_embeddings(chunks, model=embedding_model)
