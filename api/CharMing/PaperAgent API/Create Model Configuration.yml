@@ -1,0 +1,96 @@
+info:
+  name: Create Model Configuration
+  type: http
+  seq: 22
+
+http:
+  method: POST
+  url: "{{baseUrl}}/model-configurations"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "",
+        "model_name": "",
+        "api_key": "",
+        "base_url": "",
+        "description": "",
+        "is_active": false
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+examples:
+  - name: 201 Response
+    description: Successful Response
+    request:
+      url: "{{baseUrl}}/model-configurations"
+      method: POST
+      body:
+        type: json
+        data: |-
+          {
+            "name": "",
+            "model_name": "",
+            "api_key": "",
+            "base_url": "",
+            "description": "",
+            "is_active": false
+          }
+    response:
+      statusText: Created
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "id": "",
+            "name": "",
+            "model_name": "",
+            "api_key": "",
+            "base_url": "",
+            "description": "",
+            "is_active": false,
+            "created_at": "",
+            "updated_at": ""
+          }
+  - name: 422 Response
+    description: Validation Error
+    request:
+      url: "{{baseUrl}}/model-configurations"
+      method: POST
+      body:
+        type: json
+        data: |-
+          {
+            "name": "",
+            "model_name": "",
+            "api_key": "",
+            "base_url": "",
+            "description": "",
+            "is_active": false
+          }
+    response:
+      statusText: Unprocessable Entity
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "detail": [
+              {
+                "loc": [],
+                "msg": "",
+                "type": ""
+              }
+            ]
+          }

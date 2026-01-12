@@ -1,13 +1,15 @@
 import React, { useState, useRef } from 'react';
-import { Paperclip, ArrowUp, FileText, Search, Sparkles } from 'lucide-react';
+import { Paperclip, ArrowUp, FileText, Search, Sparkles, Database } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { showError } from '@/utils/dialogs';
 
 interface HomeViewProps {
   onStartChat: (message?: string, file?: File) => void;
+  onOpenKnowledge?: () => void;
 }
 
-export const HomeView: React.FC<HomeViewProps> = ({ onStartChat }) => {
+export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -35,7 +37,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat }) => {
     if (file.type === 'application/pdf') {
       onStartChat("", file);
     } else {
-      alert("Only PDF files are supported for now.");
+      showError("目前仅支持 PDF 文件格式。", "文件格式不支持");
     }
   };
 
@@ -75,10 +77,10 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat }) => {
             P
           </div>
           <h1 className="text-4xl font-serif font-medium tracking-tight text-primary">
-            PaperAgent
+            CharMing Reader
           </h1>
           <p className="text-muted-foreground text-lg font-light">
-            Your streamlined academic workspace.
+            查·明 - Your streamlined academic workspace.
           </p>
         </div>
 
@@ -153,6 +155,15 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat }) => {
               {action.text}
             </button>
           ))}
+          {onOpenKnowledge && (
+            <button
+              onClick={onOpenKnowledge}
+              className="flex items-center gap-2 px-4 py-2 bg-white/50 hover:bg-white/80 backdrop-blur-sm border border-black/5 rounded-full text-sm text-gray-600 hover:text-black transition-all shadow-sm hover:shadow-md hover:-translate-y-0.5"
+            >
+              <Database className="w-4 h-4" />
+              知识库管理
+            </button>
+          )}
         </div>
       </div>
       

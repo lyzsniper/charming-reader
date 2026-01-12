@@ -1,0 +1,106 @@
+### Chat API 测试文件
+### 使用 REST Client 或 Postman 测试
+
+@baseUrl = http://localhost:8000
+@apiPrefix = /api
+
+### 1. 简单对话（自动创建 Session）
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "你好，请介绍一下 Transformer 模型"
+}
+
+### 2. 继续对话（使用已有 session_id）
+# 注意：将下面的 session_id 替换为上一个请求返回的 session_id
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "能详细解释一下 Self-Attention 吗？",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+
+### 3. 获取知识库列表（用于后续测试）
+GET {{baseUrl}}{{apiPrefix}}/knowledge-bases
+
+### 4. RAG 问答 - 单个知识库
+# 注意：将 knowledge_base_ids 替换为实际的知识库 UUID
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "Attention Is All You Need 这篇论文的主要贡献是什么？",
+  "knowledge_base_ids": ["YOUR_KB_ID_HERE"]
+}
+
+### 5. RAG 问答 - 多个知识库
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "对比 Transformer 和 BERT 的区别",
+  "knowledge_base_ids": [
+    "KB_ID_1",
+    "KB_ID_2"
+  ],
+  "rag_top_k": 10,
+  "enable_rerank": true
+}
+
+### 6. 指定用户和会话
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "继续之前的讨论",
+  "user_id": "user_123",
+  "session_id": "my-custom-session-id"
+}
+
+### 7. 仅检索不生成答案（使用 RAG Search）
+POST {{baseUrl}}{{apiPrefix}}/rag/search
+Content-Type: application/json
+
+{
+  "query": "Transformer 架构",
+  "knowledge_base_ids": ["YOUR_KB_ID_HERE"],
+  "top_k": 5
+}
+
+### 8. RAG 完整查询（包含答案生成）
+POST {{baseUrl}}{{apiPrefix}}/rag/query
+Content-Type: application/json
+
+{
+  "question": "什么是 Multi-Head Attention？",
+  "knowledge_base_ids": ["YOUR_KB_ID_HERE"],
+  "top_k": 5,
+  "enable_rerank": true
+}
+
+### 9. 禁用 RAG 的对话（即使有知识库）
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "你是谁？",
+  "knowledge_base_ids": ["YOUR_KB_ID_HERE"],
+  "use_rag": false
+}
+
+### 10. 调整 RAG 参数
+POST {{baseUrl}}{{apiPrefix}}/chat
+Content-Type: application/json
+
+{
+  "message": "详细解释 Position Encoding",
+  "knowledge_base_ids": ["YOUR_KB_ID_HERE"],
+  "use_rag": true,
+  "rag_top_k": 15,
+  "enable_rerank": true
+}
+
+###
+

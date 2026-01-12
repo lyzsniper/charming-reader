@@ -4,7 +4,7 @@ from langchain_litellm import ChatLiteLLM
 from langchain_core.messages import HumanMessage, SystemMessage
 from llama_index.core import VectorStoreIndex
 from llama_index.core.postprocessor import LLMRerank
-from llama_index.llms.openai import OpenAI
+from llama_index.llms.litellm import LiteLLM
 from rag.ingestion import get_vector_store
 from core.config import settings
 from tavily import TavilyClient
@@ -34,18 +34,21 @@ setup_litellm_env()
 # Map common model names to LiteLLM format if needed, or user passes full string
 # e.g., "glm-4", "qwen-turbo", "deepseek-chat"
 # ChatLiteLLM handles the routing based on the model name and set env vars.
-llm = ChatLiteLLM(
-    model=settings.DEFAULT_LLM_MODEL,
-    temperature=0,
-    max_tokens=None
-)
+llm = LiteLLM(
+                model="openai/" + settings.DEFAULT_LLM_MODEL,
+                api_key=settings.QWEN_API_KEY,
+                api_base=settings.QWEN_BASE_URL,
+                custom_llm_provider="openai"
+            )
 
-# Use LlamaIndex LLM wrapper for Reranker (needs to be compatible)
-# We use OpenAI class but point it to compatible APIs if needed, or just use GPT-4o for reranking quality
-rerank_llm = OpenAI(
-    model=settings.DEFAULT_LLM_MODEL, 
-    api_key=settings.OPENAI_API_KEY or "dummy" # LlamaIndex OpenAI wrapper might need explicit key
-)
+# Use LlamaIndex LLM wrapper for Reranker
+# 使用 LiteLLM 支持所有 LLM 提供商（OpenAI、Qwen、DeepSeek 等）
+rerank_llm = LiteLLM(
+                model="openai/" + settings.DEFAULT_LLM_MODEL,
+                api_key=settings.QWEN_API_KEY,
+                api_base=settings.QWEN_BASE_URL,
+                custom_llm_provider="openai"
+            )
 
 # Initialize Tavily Client
 tavily_client = None

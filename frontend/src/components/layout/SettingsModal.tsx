@@ -45,7 +45,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             </div>
 
             <div className="p-4 bg-gray-50 text-center text-xs text-gray-400">
-              PaperAgent v0.1.0
+              CharMing Reader v1.0.0
             </div>
           </motion.div>
         </>

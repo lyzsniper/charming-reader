@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     DEFAULT_LLM_MODEL: str = "qwen-flash-2025-07-28"
     
     # Embedding Configuration
-    # For LiteLLM, we need to prefix the model with the provider
-    EMBEDDING_MODEL: str = "openai/text-embedding-v3" # Using Qwen via OpenAI-compatible endpoint
+    # 使用 Qwen 的 text-embedding-v4（1536 维）
+    EMBEDDING_MODEL: str = "text-embedding-v4"  # Qwen embedding model (1536 dimensions)
 
     
     # Provider Base URLs (for OpenAI-compatible endpoints)

@@ -1,0 +1,32 @@
+info:
+  name: chat-api
+  type: http
+  seq: 31
+
+http:
+  method: post
+  url: http://127.0.0.1:18000/chat
+  headers:
+    - name: accept
+      value: application/json
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "message": "我想了解一下Encoder and Decoder Stack",
+        "knowledge_base_ids": [
+          "dbc8eac1-30c2-484e-b6d5-ee8c4e4779e4"
+        ],
+        "use_rag": true,
+        "rag_top_k": 5,
+        "enable_rerank": true
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: false
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

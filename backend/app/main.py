@@ -4,20 +4,29 @@ import uvicorn
 from api.endpoints import router as api_router
 from rag.router import router as rag_router
 from core.logger import get_logger
+from core.exceptions import global_exception_handler, BaseAPIException
 
 # 配置日志
 logger = get_logger(__name__)
 
-app = FastAPI(title="PaperAgent API")
+app = FastAPI(
+    title="PaperAgent API",
+    version="1.0.0",
+    description="学术论文智能分析助手 API",
+)
 
 # 配置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 生产环境应该限制具体域名
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册全局异常处理器
+app.add_exception_handler(BaseAPIException, global_exception_handler)
+app.add_exception_handler(Exception, global_exception_handler)
 
 # 注册路由
 app.include_router(api_router)
@@ -29,10 +38,15 @@ logger.info("PaperAgent API 启动完成")
 async def startup_event():
     """应用启动事件"""
     from core.db import test_db_connection, check_tables_exist
+    from core.config_validator import check_config_on_startup
     
     logger.info("=" * 60)
     logger.info("PaperAgent API 正在启动...")
     logger.info("=" * 60)
+    
+    # 验证配置
+    logger.info("正在验证配置...")
+    check_config_on_startup()
     
     # 测试数据库连接
     logger.info("正在测试数据库连接...")

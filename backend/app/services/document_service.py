@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
 from fastapi import HTTPException
-from dao import DocumentDAO, DocumentKnowledgeBaseDAO, KnowledgeBaseDAO
+from dao import DocumentDAO, DocumentKnowledgeBaseDAO, DocumentSessionDAO, KnowledgeBaseDAO
 from models.sql import Document
 from models.schemas import DocumentCreate, DocumentUpdate
 from core.logger import LoggerFactory
@@ -27,7 +27,9 @@ class DocumentService:
         content_type: str,
         knowledge_base_ids: List[UUID] = [],
         storage_path: Optional[str] = None,
-        file_download_url: Optional[str] = None
+        file_download_url: Optional[str] = None,
+        is_temporary: bool = False,
+        session_id: Optional[str] = None
     ) -> Document:
         """
         创建文档
@@ -47,14 +49,17 @@ class DocumentService:
                     )
         
         # 创建文档
-        doc = DocumentDAO.create(
-            db,
+        doc = Document(
             original_filename=original_filename,
             storage_object_name=storage_object_name,
             file_size=file_size,
             content_type=content_type,
-            is_processed=False
+            is_processed=False,
+            is_temporary=is_temporary
         )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
         
         # 更新新增字段（如果DAO不支持直接传参，则手动更新）
         if storage_path:
@@ -72,6 +77,11 @@ class DocumentService:
             for kb_id in knowledge_base_ids:
                 DocumentKnowledgeBaseDAO.create(db, doc.id, kb_id)
                 logger.debug(f"文档关联知识库: doc_id={doc.id}, kb_id={kb_id}")
+        
+        # 关联会话（临时文件）
+        if is_temporary and session_id:
+            DocumentSessionDAO.create(db, doc.id, session_id)
+            logger.debug(f"文档关联会话: doc_id={doc.id}, session_id={session_id}")
         
         # 重新加载文档以包含关联关系
         return DocumentDAO.get_by_id(db, doc.id)

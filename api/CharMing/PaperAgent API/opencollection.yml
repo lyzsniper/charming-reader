@@ -1,0 +1,9 @@
+opencollection: 1.0.0
+
+info:
+  name: PaperAgent API
+bundled: false
+extensions:
+  ignore:
+    - node_modules
+    - .git

@@ -96,7 +96,23 @@ class KnowledgeBaseService:
         logger.info(f"成功删除知识库: id={kb_id}, name={kb.name}")
     
     @staticmethod
-    def get_document_count(kb: KnowledgeBase) -> int:
-        """获取知识库中的文档数量"""
-        return len(kb.documents) if kb.documents else 0
+    def get_document_count(kb: KnowledgeBase, db: Optional[Session] = None) -> int:
+        """
+        获取知识库中的文档数量
+        使用 SQL 查询避免加载文档对象（兼容迁移前的数据库结构）
+        """
+        if db is not None:
+            # 使用 SQL 查询，避免加载文档对象
+            from models.sql import DocumentKnowledgeBase
+            count = db.query(DocumentKnowledgeBase).filter(
+                DocumentKnowledgeBase.knowledge_base_id == kb.id
+            ).count()
+            return count
+        else:
+            # 回退到关系属性（如果数据库已迁移）
+            try:
+                return len(kb.documents) if kb.documents else 0
+            except Exception:
+                # 如果访问关系属性失败（可能是列不存在），返回 0
+                return 0
 

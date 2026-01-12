@@ -1,0 +1,73 @@
+info:
+  name: Add Document To Knowledge Base
+  type: http
+  seq: 19
+
+http:
+  method: POST
+  url: "{{baseUrl}}/documents/:doc_id/knowledge-bases/:kb_id"
+  params:
+    - name: doc_id
+      value: ""
+      type: path
+    - name: kb_id
+      value: ""
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+examples:
+  - name: 201 Response
+    description: Successful Response
+    request:
+      url: "{{baseUrl}}/documents/:doc_id/knowledge-bases/:kb_id"
+      method: POST
+      params:
+        - name: doc_id
+          value: ""
+          type: path
+        - name: kb_id
+          value: ""
+          type: path
+    response:
+      statusText: Created
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: ""
+  - name: 422 Response
+    description: Validation Error
+    request:
+      url: "{{baseUrl}}/documents/:doc_id/knowledge-bases/:kb_id"
+      method: POST
+      params:
+        - name: doc_id
+          value: ""
+          type: path
+        - name: kb_id
+          value: ""
+          type: path
+    response:
+      statusText: Unprocessable Entity
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "detail": [
+              {
+                "loc": [],
+                "msg": "",
+                "type": ""
+              }
+            ]
+          }

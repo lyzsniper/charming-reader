@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from uuid import UUID
 
@@ -107,3 +107,72 @@ class ModelConfigurationResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# ===== Chat 相关 Schemas =====
+
+class VectorizationStep(BaseModel):
+    """向量化步骤事件（用于SSE流式输出）"""
+    step: str = Field(..., description="步骤名称: uploading, parsing, chunking, embedding, storing, completed")
+    message: str = Field(..., description="步骤描述信息")
+    progress: Optional[float] = Field(None, ge=0, le=100, description="进度百分比 0-100")
+    details: Optional[Dict] = Field(None, description="详细信息（块数量、处理时间等）")
+
+class ChatRequest(BaseModel):
+    """聊天请求"""
+    message: str = Field(..., min_length=1, description="用户消息")
+    session_id: Optional[str] = Field(None, description="会话ID，不传则自动创建新会话")
+    user_id: Optional[str] = Field("default_user", description="用户ID")
+    knowledge_base_ids: Optional[List[UUID]] = Field(None, description="知识库ID列表，选择后启用RAG检索")
+    use_rag: bool = Field(False, description="是否启用RAG问答（有知识库时自动为True）")
+    rag_top_k: int = Field(5, ge=1, le=20, description="RAG检索数量")
+    enable_rerank: bool = Field(True, description="是否启用检索重排序")
+
+class ChatResponse(BaseModel):
+    """聊天响应"""
+    session_id: str = Field(..., description="会话ID")
+    user_id: str = Field(..., description="用户ID")
+    message: str = Field(..., description="用户消息")
+    response: str = Field(..., description="智能体回复")
+    sources: Optional[List[Dict]] = Field(None, description="RAG来源（启用RAG时返回）")
+    knowledge_base_ids: Optional[List[str]] = Field(None, description="使用的知识库ID列表")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+    
+    class Config:
+        from_attributes = True
+
+# ===== 翻译相关 Schemas =====
+
+class TranslationRequest(BaseModel):
+    """翻译请求"""
+    text: str = Field(..., min_length=1, description="要翻译的文本")
+    from_language: str = Field("auto", description="源语言代码，'auto' 表示自动检测")
+    to_language: str = Field(..., description="目标语言代码（如: 'en', 'zh', 'ja' 等）")
+    provider: Optional[str] = Field("google", description="翻译服务提供商（google, baidu, alibaba, youdao, tencent, deepl, bing, sogou）")
+
+class BatchTranslationRequest(BaseModel):
+    """批量翻译请求"""
+    texts: List[str] = Field(..., min_items=1, description="要翻译的文本列表")
+    from_language: str = Field("auto", description="源语言代码，'auto' 表示自动检测")
+    to_language: str = Field(..., description="目标语言代码")
+    provider: Optional[str] = Field("google", description="翻译服务提供商")
+
+class TranslationResponse(BaseModel):
+    """翻译响应"""
+    original_text: str = Field(..., description="原始文本")
+    translated_text: Optional[str] = Field(None, description="翻译后的文本")
+    from_language: str = Field(..., description="源语言")
+    to_language: str = Field(..., description="目标语言")
+    provider: str = Field(..., description="使用的翻译服务")
+    success: bool = Field(..., description="是否成功")
+    error: Optional[str] = Field(None, description="错误信息（如果失败）")
+
+class LanguageDetectionRequest(BaseModel):
+    """语言检测请求"""
+    text: str = Field(..., min_length=1, description="要检测的文本")
+    provider: Optional[str] = Field("google", description="翻译服务提供商")
+
+class LanguageDetectionResponse(BaseModel):
+    """语言检测响应"""
+    text: str = Field(..., description="检测的文本")
+    detected_language: Optional[str] = Field(None, description="检测到的语言代码")
+    provider: str = Field(..., description="使用的翻译服务")
+    success: bool = Field(..., description="是否成功")

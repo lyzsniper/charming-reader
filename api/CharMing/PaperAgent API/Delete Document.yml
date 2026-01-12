@@ -1,0 +1,61 @@
+info:
+  name: Delete Document
+  type: http
+  seq: 18
+
+http:
+  method: DELETE
+  url: "{{baseUrl}}/documents/:doc_id"
+  params:
+    - name: doc_id
+      value: ""
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+examples:
+  - name: 204 Response
+    description: Successful Response
+    request:
+      url: "{{baseUrl}}/documents/:doc_id"
+      method: DELETE
+      params:
+        - name: doc_id
+          value: ""
+          type: path
+    response:
+      statusText: No Content
+      body:
+        type: text
+        data: ""
+  - name: 422 Response
+    description: Validation Error
+    request:
+      url: "{{baseUrl}}/documents/:doc_id"
+      method: DELETE
+      params:
+        - name: doc_id
+          value: ""
+          type: path
+    response:
+      statusText: Unprocessable Entity
+      headers:
+        - name: Content-Type
+          value: application/json
+      body:
+        type: json
+        data: |-
+          {
+            "detail": [
+              {
+                "loc": [],
+                "msg": "",
+                "type": ""
+              }
+            ]
+          }
