@@ -142,3 +142,68 @@ class DocumentSession(Base):
     # 与 Document 的关系
     document = relationship("Document", back_populates="session_associations")
 
+# ===== Chat 对话表（区别于ADK表） =====
+
+# ChatSession 表：存储对话会话基本信息
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    session_id = Column(String, nullable=False, unique=True, index=True)  # 会话唯一标识符
+    session_title = Column(String, nullable=True)  # 会话标题
+    user_id = Column(String, nullable=False, index=True)  # 用户ID
+    custom_metadata = Column(JSON, nullable=True)  # 额外元数据
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # 与消息和历史记录的关系
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
+    histories = relationship("ChatHistory", back_populates="session", cascade="all, delete-orphan", order_by="ChatHistory.turn_index")
+
+# ChatMessage 表：存储对话的具体消息
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)  # 所属会话
+    role = Column(String, nullable=False)  # 角色类型：user, assistant, tool, system
+    message_type = Column(String, nullable=False)  # 消息类型：user_message, ai_response, tool_result, system_assembled
+    content = Column(Text, nullable=False)  # 消息内容
+    message_metadata = Column(JSON, nullable=True)  # 额外信息（工具调用详情、RAG检索结果、来源文档等）（避免使用保留字 metadata）
+    parent_message_id = Column(UUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)  # 父消息ID（用于关联同一轮次的消息）
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # 与 Session 的关系
+    session = relationship("ChatSession", back_populates="messages")
+    
+    # 自关联关系（父消息和子消息）
+    parent_message = relationship("ChatMessage", remote_side=[id], backref="child_messages")
+    
+    # 与 ChatHistory 的关系（作为用户消息或助手消息）
+    user_history = relationship("ChatHistory", foreign_keys="ChatHistory.user_message_id", back_populates="user_message")
+    assistant_history = relationship("ChatHistory", foreign_keys="ChatHistory.assistant_message_id", back_populates="assistant_message")
+
+# ChatHistory 表：存储对话消息的组合记录（一次完整对话轮次）
+class ChatHistory(Base):
+    __tablename__ = "chat_histories"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)  # 所属会话
+    turn_index = Column(Integer, nullable=False)  # 对话轮次序号（从1开始，同一session内递增）
+    user_message_id = Column(UUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)  # 用户消息ID
+    assistant_message_id = Column(UUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)  # AI回复消息ID
+    summary = Column(Text, nullable=True)  # 该轮次的摘要
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # 与 Session 的关系
+    session = relationship("ChatSession", back_populates="histories")
+    
+    # 与 ChatMessage 的关系
+    user_message = relationship("ChatMessage", foreign_keys=[user_message_id], back_populates="user_history")
+    assistant_message = relationship("ChatMessage", foreign_keys=[assistant_message_id], back_populates="assistant_history")
+    
+    # 唯一约束：同一session内turn_index唯一
+    __table_args__ = (
+        # UniqueConstraint('session_id', 'turn_index', name='uix_chat_history_session_turn'),
+    )
+

@@ -7,8 +7,8 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { CITATION_EVENT } from './ChatPanel';
 import { api, type DocumentTranslationResponse } from '@/services/api';
-import ReactMarkdown from 'react-markdown';
 import { showError } from '@/utils/dialogs';
+import { MarkdownRenderer } from '@/components/common/MarkdownRenderer';
 
 // Setup pdf worker - 使用 CDN 确保可用性
 if (typeof window !== 'undefined') {
@@ -291,9 +291,7 @@ export const ContextPanel: React.FC<ContextPanelProps> = ({ fileUrl, file, sessi
               </div>
               {/* Translation Content */}
               <div className="flex-1 overflow-y-auto p-6 bg-white">
-                <div className="prose prose-sm max-w-none">
-                  <ReactMarkdown>{translationResult.translated_text}</ReactMarkdown>
-                </div>
+                <MarkdownRenderer content={translationResult.translated_text} />
               </div>
             </div>
           ) : (

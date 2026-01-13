@@ -39,14 +39,22 @@ from models.schemas import (
     ModelConfigurationResponse,
     ChatRequest,
     ChatResponse,
+    SkillInfo,
     VectorizationStep,
     TranslationRequest,
     TranslationResponse,
     BatchTranslationRequest,
     LanguageDetectionRequest,
-    LanguageDetectionResponse
+    LanguageDetectionResponse,
+    ChatSessionCreate,
+    ChatSessionUpdate,
+    ChatSessionResponse,
+    ChatMessageResponse,
+    ChatHistoryResponse,
+    ChatHistoryDetailResponse
 )
-from models.sql import Session as DBSessionModel, SessionMessage
+from models.sql import Session as DBSessionModel, SessionMessage, ChatSession, ChatMessage, ChatHistory
+from services.chat_service import ChatService
 
 # 创建日志记录器
 logger = LoggerFactory.get_api_logger(__name__)
@@ -85,7 +93,9 @@ async def _chat_with_file_stream(
     message: str,
     session_id: Optional[str],
     user_id: str,
-    db: Session
+    db: Session,
+    knowledge_base_ids: Optional[List[UUID]] = None,
+    use_rag: bool = False
 ) -> AsyncGenerator[str, None]:
     """处理带文件上传的聊天请求（流式响应）"""
     temp_file_path = None
@@ -97,16 +107,9 @@ async def _chat_with_file_stream(
             session_id = str(uuid4())
             logger.info(f"✓ 自动创建新会话: session_id={session_id}")
         
-        # 2. 校验文件格式
+        # 2. 获取文件信息（不限制文件类型，允许所有文件上传到对话）
         _, ext = os.path.splitext(file.filename or "")
-        ext = ext.lower()
-        if not ext or ext not in SUPPORTED_MARKDOWN_EXTENSIONS:
-            allowed_exts = ", ".join(sorted(SUPPORTED_MARKDOWN_EXTENSIONS))
-            yield _format_sse_event("error", {
-                "error": f"不支持的文件格式。允许的格式: {allowed_exts}"
-            })
-            return
-        
+        ext = ext.lower() if ext else ""
         content_type = file.content_type or EXTENSION_CONTENT_TYPE.get(ext, "application/octet-stream")
         
         # 3. 保存文件到临时目录
@@ -240,15 +243,19 @@ async def _chat_with_file_stream(
             "message": "开始生成回答..."
         })
         
-        response_text, actual_session_id, rag_sources = await run_agent_with_rag(
+        # 如果提供了知识库，使用知识库进行 RAG；否则使用临时文件进行 RAG
+        use_rag_final = use_rag or knowledge_base_ids is not None
+        kb_ids_final = knowledge_base_ids if knowledge_base_ids else None
+        
+        response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = await run_agent_with_rag(
             input_text=message,
             user_id=user_id,
             session_id=session_id,
-            knowledge_base_ids=None,  # 不使用知识库
-            use_rag=True,  # 启用RAG，使用临时文件
+            knowledge_base_ids=kb_ids_final,  # 如果提供了知识库，使用知识库；否则为 None（使用临时文件）
+            use_rag=use_rag_final,  # 启用RAG（使用知识库或临时文件）
             rag_top_k=5,
             enable_rerank=True,
-            session_id_for_temp_files=session_id  # 指定使用临时文件
+            session_id_for_temp_files=session_id if not kb_ids_final else None  # 如果没有知识库，指定使用临时文件
         )
         
         # 8. 发送最终响应
@@ -258,7 +265,9 @@ async def _chat_with_file_stream(
             "message": message,
             "response": response_text,
             "sources": rag_sources,
-            "knowledge_base_ids": None,
+            "knowledge_base_ids": [str(kb_id) for kb_id in knowledge_base_ids] if knowledge_base_ids else None,
+            "activated_skills": activated_skills,
+            "skills_prompt": skills_prompt,
             "created_at": datetime.now().isoformat()
         })
         
@@ -384,7 +393,7 @@ async def chat(
         
         # 3. 调用智能体（支持 RAG）
         logger.info("开始调用智能体...")
-        response_text, actual_session_id, rag_sources = await run_agent_with_rag(
+        response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = await run_agent_with_rag(
             input_text=req.message,
             user_id=user_id,
             session_id=session_id,
@@ -398,6 +407,18 @@ async def chat(
         if rag_sources:
             logger.info(f"✓ RAG 来源: {len(rag_sources)} 个片段")
         
+        # 转换技能信息格式
+        skill_info_list = None
+        if activated_skills:
+            skill_info_list = [
+                SkillInfo(
+                    name=skill.get("name", ""),
+                    description=skill.get("description", ""),
+                    version=skill.get("version")
+                )
+                for skill in activated_skills
+            ]
+        
         # 4. 构建响应
         response = ChatResponse(
             session_id=actual_session_id,
@@ -406,6 +427,8 @@ async def chat(
             response=response_text,
             sources=rag_sources,
             knowledge_base_ids=[str(kb_id) for kb_id in req.knowledge_base_ids] if req.knowledge_base_ids else None,
+            activated_skills=skill_info_list,
+            skills_prompt=skills_prompt,
             created_at=datetime.now()
         )
         
@@ -465,8 +488,28 @@ async def chat_form(
     
     # 如果有文件上传，使用流式响应
     if file:
+        # 解析知识库ID
+        kb_ids_for_stream = None
+        if knowledge_base_ids:
+            try:
+                kb_ids_for_stream = [UUID(id.strip()) for id in knowledge_base_ids.split(",") if id.strip()]
+                # 验证知识库
+                for kb_id in kb_ids_for_stream:
+                    kb = KnowledgeBaseService.get_knowledge_base_by_id(db, kb_id)
+                    if not kb:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"知识库不存在: {kb_id}"
+                        )
+                use_rag_for_stream = True
+            except (ValueError, AttributeError):
+                kb_ids_for_stream = None
+                use_rag_for_stream = use_rag
+        else:
+            use_rag_for_stream = use_rag
+        
         return StreamingResponse(
-            _chat_with_file_stream(file, message, session_id, user_id, db),
+            _chat_with_file_stream(file, message, session_id, user_id, db, kb_ids_for_stream, use_rag_for_stream),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -501,7 +544,7 @@ async def chat_form(
                     )
         
         # 3. 调用智能体（支持 RAG）
-        response_text, actual_session_id, rag_sources = await run_agent_with_rag(
+        response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = await run_agent_with_rag(
             input_text=message,
             user_id=user_id,
             session_id=session_id,
@@ -511,6 +554,18 @@ async def chat_form(
             enable_rerank=enable_rerank
         )
         
+        # 转换技能信息格式
+        skill_info_list = None
+        if activated_skills:
+            skill_info_list = [
+                SkillInfo(
+                    name=skill.get("name", ""),
+                    description=skill.get("description", ""),
+                    version=skill.get("version")
+                )
+                for skill in activated_skills
+            ]
+        
         # 4. 构建响应
         response = ChatResponse(
             session_id=actual_session_id,
@@ -519,6 +574,8 @@ async def chat_form(
             response=response_text,
             sources=rag_sources,
             knowledge_base_ids=[str(kb_id) for kb_id in kb_ids] if kb_ids else None,
+            activated_skills=skill_info_list,
+            skills_prompt=skills_prompt,
             created_at=datetime.now()
         )
         
@@ -1016,103 +1073,35 @@ async def get_session_messages(
     db: Session = Depends(get_db)
 ):
     """
-    获取会话消息列表（简化版，仅返回角色和文本）
+    获取会话消息列表（使用Chat表，仅返回用户和助手消息，简化格式）
     """
     try:
-        # 查找会话
-        db_session = db.query(DBSessionModel).filter(
-            DBSessionModel.session_id == session_id,
-            DBSessionModel.user_id == user_id
+        # 使用Chat表查询
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
         ).first()
-        if not db_session:
+        
+        if not chat_session:
             raise HTTPException(status_code=404, detail="会话不存在")
         
+        # 只获取用户消息和助手回复（过滤掉system和tool消息）
+        chat_messages = db.query(ChatMessage).filter(
+            ChatMessage.session_id == chat_session.id,
+            ChatMessage.role.in_(["user", "assistant"])
+        ).order_by(ChatMessage.created_at.asc()).all()
+        
         messages = []
-        logger.info(f"开始提取会话消息: session_id={session_id}, 消息数量={len(db_session.messages)}")
+        for msg in chat_messages:
+            # 标准化 role：'assistant' -> 'agent'（前端期望的格式）
+            role = "agent" if msg.role == "assistant" else msg.role
+            
+            messages.append({
+                "role": role,
+                "text": msg.content,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None
+            })
         
-        for idx, msg in enumerate(db_session.messages):
-            try:
-                content_data = msg.content if isinstance(msg.content, dict) else \
-                    json.loads(msg.content) if isinstance(msg.content, str) else {}
-                
-                text = ""
-                
-                # 检查是否是 Event 格式（新格式：包含 author, content, timestamp 等）
-                if isinstance(content_data, dict) and "content" in content_data:
-                    # 新格式：Event 对象，content 字段包含 Content 对象
-                    event_content = content_data.get("content", {})
-                    if isinstance(event_content, dict):
-                        parts = event_content.get("parts", [])
-                        if parts and isinstance(parts, list):
-                            # 提取所有文本部分
-                            text_parts = []
-                            for part in parts:
-                                if isinstance(part, dict):
-                                    part_text = part.get("text", "")
-                                    if part_text:
-                                        text_parts.append(part_text)
-                                elif hasattr(part, "text"):
-                                    text_parts.append(part.text)
-                            text = "".join(text_parts)
-                            logger.debug(f"  消息 {idx+1}: 从 Event.content.parts 提取文本，长度={len(text)}")
-                # 检查是否是 Content 格式（旧格式：直接包含 parts）
-                elif isinstance(content_data, dict) and "parts" in content_data:
-                    # 旧格式：直接是 Content 对象
-                    parts = content_data.get("parts", [])
-                    if parts and isinstance(parts, list):
-                        text_parts = []
-                        for part in parts:
-                            if isinstance(part, dict):
-                                part_text = part.get("text", "")
-                                if part_text:
-                                    text_parts.append(part_text)
-                            elif hasattr(part, "text"):
-                                text_parts.append(part.text)
-                        text = "".join(text_parts)
-                        logger.debug(f"  消息 {idx+1}: 从 Content.parts 提取文本，长度={len(text)}")
-                else:
-                    # 尝试其他可能的格式
-                    if isinstance(content_data, dict):
-                        # 尝试直接获取 text 字段
-                        text = content_data.get("text", "")
-                        if not text and "data" in content_data:
-                            # 尝试从 data 中获取
-                            data = content_data.get("data", {})
-                            if isinstance(data, dict):
-                                text = data.get("text", "")
-                        logger.debug(f"  消息 {idx+1}: 尝试其他格式提取文本，长度={len(text)}")
-                
-                # 如果仍然没有文本，记录详细信息用于调试
-                if not text:
-                    logger.warning(f"  消息 {idx+1} 无法提取文本: role={msg.role}, content_keys={list(content_data.keys()) if isinstance(content_data, dict) else 'N/A'}, content_sample={str(content_data)[:200] if isinstance(content_data, dict) else str(content_data)[:200]}")
-                
-                # 标准化 role：'model' -> 'agent'（前端期望的格式）
-                role = msg.role
-                if role == "model":
-                    role = "agent"
-                elif role not in ["user", "agent"]:
-                    # 如果 role 不是标准值，尝试从 event 中获取
-                    if isinstance(content_data, dict) and "author" in content_data:
-                        role = content_data.get("author", role)
-                        if role == "model":
-                            role = "agent"
-                
-                messages.append({
-                    "role": role,
-                    "text": text,
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                })
-            except Exception as e:
-                logger.error(f"  消息 {idx+1} 处理失败: {type(e).__name__}: {str(e)}", exc_info=True)
-                # 即使处理失败，也添加一条空消息，避免索引错乱
-                messages.append({
-                    "role": msg.role or "user",
-                    "text": f"[消息解析失败: {str(e)[:50]}]",
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                })
-        
-        text_count = sum(1 for m in messages if m['text'] and len(m['text'].strip()) > 0)
-        logger.info(f"✓ 成功提取 {len(messages)} 条消息，其中 {text_count} 条有文本内容")
+        logger.info(f"✓ 从Chat表获取消息: session_id={session_id}, 消息数量={len(messages)}")
         return {"session_id": session_id, "messages": messages}
     except HTTPException:
         raise
@@ -1129,75 +1118,55 @@ async def list_sessions(
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
-    """获取用户会话列表"""
+    """获取用户会话列表（使用Chat表）"""
     try:
-        from services.session_service import get_session_service
-        from models.sql import Session as DBSessionModel
+        # 使用Chat表查询会话列表
+        chat_sessions = db.query(ChatSession).filter(
+            ChatSession.user_id == user_id
+        ).order_by(ChatSession.updated_at.desc()).offset(skip).limit(limit).all()
         
-        session_service = get_session_service()
-        
-        result = await session_service.list_sessions(
-            app_name="paper_agent",
-            user_id=user_id
-        )
-        
-        # 转换为前端需要的格式
         sessions = []
-        for session in result.sessions[skip:skip+limit]:
+        for chat_session in chat_sessions:
             # 获取第一条用户消息作为标题
-            db_session = db.query(DBSessionModel).filter(
-                DBSessionModel.session_id == session.id
-            ).first()
+            first_user_message = db.query(ChatMessage).filter(
+                ChatMessage.session_id == chat_session.id,
+                ChatMessage.role == "user"
+            ).order_by(ChatMessage.created_at.asc()).first()
             
-            title = "新对话"
-            last_message_time = session.last_update_time
+            title = chat_session.session_title or "新对话"
+            if not title or title == "新对话":
+                if first_user_message:
+                    # 使用用户消息的前50个字符作为标题
+                    title = first_user_message.content[:50] if first_user_message.content else "新对话"
             
-            if db_session and db_session.messages:
-                # 查找第一条用户消息
-                user_message = next(
-                    (msg for msg in db_session.messages if msg.role == "user"),
-                    None
-                )
-                if user_message and user_message.content:
-                    content_data = user_message.content if isinstance(user_message.content, dict) else json.loads(user_message.content) if isinstance(user_message.content, str) else {}
-                    
-                    text = ""
-                    # 检查是否是 Event 格式
-                    if isinstance(content_data, dict) and "content" in content_data:
-                        event_content = content_data.get("content", {})
-                        if isinstance(event_content, dict):
-                            parts = event_content.get("parts", [])
-                            if parts and len(parts) > 0:
-                                first_part = parts[0]
-                                if isinstance(first_part, dict):
-                                    text = first_part.get("text", "")
-                    # 检查是否是 Content 格式
-                    elif isinstance(content_data, dict) and "parts" in content_data:
-                        parts = content_data.get("parts", [])
-                        if parts and len(parts) > 0:
-                            first_part = parts[0]
-                            if isinstance(first_part, dict):
-                                text = first_part.get("text", "")
-                    
-                    if text:
-                        title = text[:50] + "..." if len(text) > 50 else text
-                
-                # 获取最后一条消息的时间
-                last_msg = db_session.messages[-1] if db_session.messages else None
-                if last_msg:
-                    last_message_time = last_msg.created_at.timestamp() if hasattr(last_msg.created_at, 'timestamp') else session.last_update_time
+            # 获取最后一条消息的时间
+            last_message = db.query(ChatMessage).filter(
+                ChatMessage.session_id == chat_session.id
+            ).order_by(ChatMessage.created_at.desc()).first()
+            
+            last_message_time = 0.0
+            if last_message and last_message.created_at:
+                try:
+                    last_message_time = float(last_message.created_at.timestamp())
+                except Exception:
+                    last_message_time = 0.0
+            elif chat_session.updated_at:
+                try:
+                    last_message_time = float(chat_session.updated_at.timestamp())
+                except Exception:
+                    last_message_time = 0.0
             
             sessions.append({
-                "session_id": session.id,
+                "session_id": chat_session.session_id,
                 "title": title,
                 "last_message_time": last_message_time,
-                "created_at": db_session.created_at.isoformat() if db_session and db_session.created_at else None,
-                "updated_at": db_session.updated_at.isoformat() if db_session and db_session.updated_at else None,
+                "created_at": chat_session.created_at.isoformat() if chat_session.created_at else None,
+                "updated_at": chat_session.updated_at.isoformat() if chat_session.updated_at else None,
             })
         
         return {
             "sessions": sessions,
-            "total": len(result.sessions)
+            "total": len(sessions)
         }
     except Exception as e:
         logger.error(f"获取会话列表失败: {e}", exc_info=True)
@@ -1477,3 +1446,197 @@ async def translate_document(
     except Exception as e:
         logger.error(f"文档翻译失败: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文档翻译失败: {str(e)}")
+
+# ===== Chat 对话表 API（区别于ADK表） =====
+
+@router.get("/chat/sessions", response_model=List[ChatSessionResponse])
+async def list_chat_sessions(
+    user_id: str = Query("default_user", description="用户ID"),
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(100, ge=1, le=1000, description="返回数量限制"),
+    db: Session = Depends(get_db)
+):
+    """
+    获取用户的Chat会话列表
+    """
+    try:
+        db_sessions = db.query(ChatSession).filter(
+            ChatSession.user_id == user_id
+        ).order_by(ChatSession.updated_at.desc()).offset(skip).limit(limit).all()
+        
+        return [ChatSessionResponse.model_validate(session) for session in db_sessions]
+    except Exception as e:
+        logger.error(f"获取Chat会话列表失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/chat/sessions/{session_id}", response_model=ChatSessionResponse)
+async def get_chat_session(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    获取Chat会话详情
+    """
+    try:
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        return ChatSessionResponse.model_validate(chat_session)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取Chat会话详情失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/chat/sessions/{session_id}", response_model=ChatSessionResponse)
+async def update_chat_session(
+    session_id: str,
+    update_data: ChatSessionUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    更新Chat会话（如修改标题）
+    """
+    try:
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        # 更新字段
+        if update_data.session_title is not None:
+            chat_session.session_title = update_data.session_title
+        if update_data.custom_metadata is not None:
+            chat_session.custom_metadata = update_data.custom_metadata
+        
+        db.commit()
+        db.refresh(chat_session)
+        
+        return ChatSessionResponse.model_validate(chat_session)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"更新Chat会话失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/chat/sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    删除Chat会话（级联删除消息和历史记录）
+    """
+    try:
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        db.delete(chat_session)
+        db.commit()
+        
+        return {"success": True, "message": "会话已删除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"删除Chat会话失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/chat/sessions/{session_id}/messages", response_model=List[ChatMessageResponse])
+async def get_chat_messages(
+    session_id: str,
+    role: Optional[str] = Query(None, description="过滤角色：user, assistant, tool, system"),
+    message_type: Optional[str] = Query(None, description="过滤消息类型"),
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(100, ge=1, le=1000, description="返回数量限制"),
+    db: Session = Depends(get_db)
+):
+    """
+    获取Chat会话的消息列表
+    """
+    try:
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        query = db.query(ChatMessage).filter(
+            ChatMessage.session_id == chat_session.id
+        )
+        
+        if role:
+            query = query.filter(ChatMessage.role == role)
+        if message_type:
+            query = query.filter(ChatMessage.message_type == message_type)
+        
+        messages = query.order_by(ChatMessage.created_at.asc()).offset(skip).limit(limit).all()
+        
+        return [ChatMessageResponse.model_validate(msg) for msg in messages]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取Chat消息列表失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/chat/sessions/{session_id}/history", response_model=List[ChatHistoryDetailResponse])
+async def get_chat_history(
+    session_id: str,
+    skip: int = Query(0, ge=0, description="跳过数量"),
+    limit: int = Query(100, ge=1, le=1000, description="返回数量限制"),
+    db: Session = Depends(get_db)
+):
+    """
+    获取Chat会话的历史记录（包含关联的消息对象）
+    """
+    try:
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        histories = db.query(ChatHistory).filter(
+            ChatHistory.session_id == chat_session.id
+        ).order_by(ChatHistory.turn_index.desc()).offset(skip).limit(limit).all()
+        
+        result = []
+        for history in histories:
+            history_dict = ChatHistoryResponse.model_validate(history).model_dump()
+            
+            # 加载关联的消息对象
+            if history.user_message_id:
+                user_msg = db.query(ChatMessage).filter(
+                    ChatMessage.id == history.user_message_id
+                ).first()
+                if user_msg:
+                    history_dict["user_message"] = ChatMessageResponse.model_validate(user_msg).model_dump()
+            
+            if history.assistant_message_id:
+                assistant_msg = db.query(ChatMessage).filter(
+                    ChatMessage.id == history.assistant_message_id
+                ).first()
+                if assistant_msg:
+                    history_dict["assistant_message"] = ChatMessageResponse.model_validate(assistant_msg).model_dump()
+            
+            result.append(ChatHistoryDetailResponse.model_validate(history_dict))
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取Chat历史记录失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

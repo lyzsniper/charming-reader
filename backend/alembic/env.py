@@ -18,7 +18,13 @@ from models.sql import (
     Document, 
     DocumentChunk, 
     DocumentKnowledgeBase,
-    ModelConfiguration
+    ModelConfiguration,
+    Session,
+    SessionMessage,
+    DocumentSession,
+    ChatSession,
+    ChatMessage,
+    ChatHistory
 )
 
 # this is the Alembic Config object, which provides

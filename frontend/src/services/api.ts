@@ -13,6 +13,11 @@ export const API_ROUTES = {
   suggestSkills: '/skills/suggest',
   sessions: '/sessions',
   sessionMessages: (sessionId: string) => `/sessions/${sessionId}/messages`,
+  // Chat表相关接口
+  chatSessions: '/chat/sessions',
+  chatSession: (sessionId: string) => `/chat/sessions/${sessionId}`,
+  chatSessionMessages: (sessionId: string) => `/chat/sessions/${sessionId}/messages`,
+  chatSessionHistory: (sessionId: string) => `/chat/sessions/${sessionId}/history`,
   translate: '/translate',
   translateBatch: '/translate/batch',
   translateDetect: '/translate/detect',
@@ -110,6 +115,12 @@ export interface ChatRequest {
   enable_rerank?: boolean;
 }
 
+export interface SkillInfo {
+  name: string;
+  description: string;
+  version?: string | null;
+}
+
 export interface ChatResponse {
   session_id: string;
   user_id: string;
@@ -117,6 +128,8 @@ export interface ChatResponse {
   response: string;
   sources?: Array<Record<string, unknown>> | null;
   knowledge_base_ids?: string[] | null;
+  activated_skills?: SkillInfo[] | null;
+  skills_prompt?: string | null;
   created_at?: string;
 }
 
@@ -486,6 +499,49 @@ export interface DocumentTranslationResponse {
   success: boolean;
 }
 
+// ===== Chat表相关接口类型 =====
+
+export interface ChatSessionResponse {
+  id: string;
+  session_id: string;
+  session_title?: string | null;
+  user_id: string;
+  custom_metadata?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatSessionUpdate {
+  session_title?: string | null;
+  custom_metadata?: Record<string, unknown> | null;
+}
+
+export interface ChatMessageResponse {
+  id: string;
+  session_id: string;
+  role: string;
+  message_type: string;
+  content: string;
+  message_metadata?: Record<string, unknown> | null;
+  parent_message_id?: string | null;
+  created_at: string;
+}
+
+export interface ChatHistoryResponse {
+  id: string;
+  session_id: string;
+  turn_index: number;
+  user_message_id?: string | null;
+  assistant_message_id?: string | null;
+  summary?: string | null;
+  created_at: string;
+}
+
+export interface ChatHistoryDetailResponse extends ChatHistoryResponse {
+  user_message?: ChatMessageResponse | null;
+  assistant_message?: ChatMessageResponse | null;
+}
+
 const translate = (payload: TranslationRequest) => {
   return request<TranslationResponse>(API_ROUTES.translate, {
     method: 'POST',
@@ -523,6 +579,66 @@ const translateDocument = async (
   return data as DocumentTranslationResponse;
 };
 
+// ===== Chat表相关API =====
+
+const listChatSessions = (params?: { user_id?: string; skip?: number; limit?: number }) => {
+  return request<ChatSessionResponse[]>(API_ROUTES.chatSessions, {
+    method: 'GET',
+    query: {
+      user_id: params?.user_id ?? 'default_user',
+      skip: params?.skip ?? 0,
+      limit: params?.limit ?? 100,
+    },
+  });
+};
+
+const getChatSession = (sessionId: string) => {
+  return request<ChatSessionResponse>(API_ROUTES.chatSession(sessionId), {
+    method: 'GET',
+  });
+};
+
+const updateChatSession = (sessionId: string, payload: ChatSessionUpdate) => {
+  return request<ChatSessionResponse>(API_ROUTES.chatSession(sessionId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+};
+
+const deleteChatSession = (sessionId: string) => {
+  return request<{ success: boolean; message: string }>(API_ROUTES.chatSession(sessionId), {
+    method: 'DELETE',
+  });
+};
+
+const getChatMessages = (sessionId: string, params?: { 
+  role?: string; 
+  message_type?: string; 
+  skip?: number; 
+  limit?: number 
+}) => {
+  return request<ChatMessageResponse[]>(API_ROUTES.chatSessionMessages(sessionId), {
+    method: 'GET',
+    query: {
+      role: params?.role,
+      message_type: params?.message_type,
+      skip: params?.skip ?? 0,
+      limit: params?.limit ?? 100,
+    },
+  });
+};
+
+const getChatHistory = (sessionId: string, params?: { skip?: number; limit?: number }) => {
+  return request<ChatHistoryDetailResponse[]>(API_ROUTES.chatSessionHistory(sessionId), {
+    method: 'GET',
+    query: {
+      skip: params?.skip ?? 0,
+      limit: params?.limit ?? 100,
+    },
+  });
+};
+
 export const api = {
   routes: API_ROUTES,
   chat,
@@ -542,6 +658,13 @@ export const api = {
   ragSearch,
   listSessions,
   listSessionMessages,
+  // Chat表相关API
+  listChatSessions,
+  getChatSession,
+  updateChatSession,
+  deleteChatSession,
+  getChatMessages,
+  getChatHistory,
   translate,
   translateDocument,
 };

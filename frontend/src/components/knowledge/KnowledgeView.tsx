@@ -75,11 +75,6 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({ onClose }) => {
     }
   };
 
-  const [promptOpen, setPromptOpen] = useState(false);
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
-  const [kbToDelete, setKbToDelete] = useState<string | null>(null);
-  const [promptValue, setPromptValue] = useState('');
-
   const handleCreateKnowledgeBase = async (name: string) => {
     if (!name?.trim()) return;
     try {
@@ -93,7 +88,6 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({ onClose }) => {
     } finally {
       setIsCreating(false);
       setPromptOpen(false);
-      setPromptValue('');
     }
   };
 
