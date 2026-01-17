@@ -43,7 +43,9 @@ class SkillsManager:
     
     def _load_all_skills(self):
         """加载所有技能的元数据到注册表"""
+        print(f"[SkillsManager] Starting to load skills from: {self.loader.skills_dir}")
         skills_metadata = self.loader.scan_skills()
+        print(f"[SkillsManager] Scanned {len(skills_metadata)} skills from filesystem")
         
         for metadata in skills_metadata:
             self.registry.register_skill(
@@ -53,8 +55,16 @@ class SkillsManager:
                 version=metadata.version,
                 file_path=metadata.file_path
             )
+            print(f"[SkillsManager] Registered skill: {metadata.name} ({len(metadata.triggers)} triggers)")
         
-        print(f"Loaded {len(skills_metadata)} skills")
+        print(f"[SkillsManager] Total loaded and registered: {len(skills_metadata)} skills")
+        
+        # 验证GitHub skill是否加载
+        github_skill = self.registry.get_skill("github-integration")
+        if github_skill:
+            print(f"[SkillsManager] GitHub skill found: {github_skill.name}, triggers: {len(github_skill.triggers)}")
+        else:
+            print(f"[SkillsManager] WARNING: GitHub skill NOT found in registry!")
     
     def list_all_skills(self) -> List[Dict]:
         """

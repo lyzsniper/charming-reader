@@ -18,8 +18,14 @@ class ModelConfigurationDAO:
         model_name: str,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        provider: Optional[str] = None,
         description: Optional[str] = None,
-        is_active: bool = False
+        is_active: bool = False,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None
     ) -> ModelConfiguration:
         """创建模型配置记录"""
         config = ModelConfiguration(
@@ -27,8 +33,14 @@ class ModelConfigurationDAO:
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
+            provider=provider,
             description=description,
-            is_active=is_active
+            is_active=is_active,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty
         )
         db.add(config)
         db.commit()

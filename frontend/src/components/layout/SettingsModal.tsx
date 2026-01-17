@@ -1,7 +1,8 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, User, Monitor, Key, HelpCircle, LogOut } from 'lucide-react';
+import { X, User, Monitor, Key, HelpCircle, LogOut, Sun, Moon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useTheme } from '@/hooks/useTheme';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -9,6 +10,8 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+  const { theme, toggleTheme } = useTheme();
+  
   return (
     <AnimatePresence>
       {isOpen && (
@@ -36,7 +39,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <div className="p-2">
               <div className="space-y-1">
                 <SettingItem icon={<User />} label="Account" />
-                <SettingItem icon={<Monitor />} label="Appearance" value="Light" />
+                <SettingItem 
+                  icon={theme === 'dark' ? <Moon /> : <Sun />} 
+                  label="Appearance" 
+                  value={theme === 'dark' ? 'Dark' : 'Light'}
+                  onClick={toggleTheme}
+                />
                 <SettingItem icon={<Key />} label="API Keys" />
                 <SettingItem icon={<HelpCircle />} label="Help & Support" />
                 <div className="my-2 border-t" />
@@ -54,8 +62,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   );
 };
 
-const SettingItem = ({ icon, label, value, className = "" }: any) => (
-  <button className={`w-full flex items-center justify-between p-3 rounded-xl hover:bg-gray-100 transition-colors ${className}`}>
+const SettingItem = ({ icon, label, value, className = "", onClick }: any) => (
+  <button 
+    onClick={onClick}
+    className={`w-full flex items-center justify-between p-3 rounded-xl hover:bg-gray-100 transition-colors ${className}`}
+  >
     <div className="flex items-center gap-3">
       <div className="w-5 h-5 opacity-70">{icon}</div>
       <span className="text-sm font-medium">{label}</span>

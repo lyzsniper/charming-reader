@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileText, Upload, Database, Plus, Trash2, Loader2, X, ChevronRight, Info } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
@@ -9,6 +10,7 @@ import { KnowledgeSearchModal } from './KnowledgeSearchModal';
 import { showSuccess, showError, showWarning } from '@/utils/dialogs';
 import { PromptDialog } from '@/components/common/PromptDialog';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { EmptyState } from '@/components/common/EmptyState';
 
 interface KnowledgeViewProps {
   onClose: () => void;
@@ -206,37 +208,63 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({ onClose }) => {
               <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
             </div>
           ) : knowledgeBases.length === 0 ? (
-            <div className="text-sm text-gray-400 py-4 text-center">暂无知识库</div>
+            <EmptyState
+              icon={Database}
+              title="暂无知识库"
+              description="创建你的第一个知识库开始管理文档"
+              action={{
+                label: "创建知识库",
+                onClick: () => setPromptOpen(true),
+              }}
+              size="sm"
+              className="py-8"
+            />
           ) : (
-            knowledgeBases.map((kb) => (
-              <div key={kb.id} className="relative group">
-                <Button
-                  variant={selectedKb === kb.id ? 'secondary' : 'ghost'}
-                  className={cn(
-                    "justify-start w-full",
-                    selectedKb === kb.id && "bg-white shadow-sm text-black"
-                  )}
-                  onClick={() => setSelectedKb(kb.id)}
+            knowledgeBases.map((kb, index) => (
+              <motion.div
+                key={kb.id}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: index * 0.05 }}
+                className="relative group"
+              >
+                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                  <Button
+                    variant={selectedKb === kb.id ? 'secondary' : 'ghost'}
+                    className={cn(
+                      "justify-start w-full transition-all",
+                      selectedKb === kb.id && "bg-white shadow-md text-black border border-gray-200"
+                    )}
+                    onClick={() => setSelectedKb(kb.id)}
+                  >
+                    <FileText className="w-4 h-4 mr-2" />
+                    <span className="flex-1 text-left truncate font-medium">{kb.name}</span>
+                  </Button>
+                </motion.div>
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  whileHover={{ opacity: 1, scale: 1.1 }}
+                  className="absolute right-1 top-1"
                 >
-                  <FileText className="w-4 h-4 mr-2" />
-                  <span className="flex-1 text-left truncate">{kb.name}</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-1 top-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={(e) => handleDeleteKnowledgeBase(kb.id, e)}
-                >
-                  <Trash2 className="w-3 h-3 text-red-500" />
-                </Button>
-              </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50"
+                    onClick={(e) => handleDeleteKnowledgeBase(kb.id, e)}
+                  >
+                    <Trash2 className="w-3 h-3 text-red-500" />
+                  </Button>
+                </motion.div>
+              </motion.div>
             ))
           )}
 
           <div className="mt-auto pt-4 border-t border-gray-200">
-            <div
+            <motion.div
+              whileHover={!isUploading ? { scale: 1.02 } : {}}
+              whileTap={!isUploading ? { scale: 0.98 } : {}}
               className={cn(
-                "border-2 border-dashed rounded-xl p-4 flex flex-col items-center justify-center text-gray-400 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-500 transition-colors cursor-pointer group",
+                "border-2 border-dashed rounded-xl p-4 flex flex-col items-center justify-center text-gray-400 hover:border-blue-400 hover:bg-gradient-to-br hover:from-blue-50 hover:to-blue-100/50 hover:text-blue-600 transition-all cursor-pointer group shadow-sm hover:shadow-md",
                 isUploading && "opacity-50 cursor-not-allowed"
               )}
               onClick={() => !isUploading && fileInputRef.current?.click()}
@@ -251,16 +279,21 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({ onClose }) => {
             >
               {isUploading ? (
                 <>
-                  <Loader2 className="w-6 h-6 mb-2 animate-spin" />
+                  <Loader2 className="w-6 h-6 mb-2 animate-spin text-blue-500" />
                   <span className="text-xs font-medium">上传中...</span>
                 </>
               ) : (
                 <>
-                  <Upload className="w-6 h-6 mb-2 group-hover:scale-110 transition-transform" />
+                  <motion.div
+                    animate={{ y: [0, -4, 0] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                  >
+                    <Upload className="w-6 h-6 mb-2 group-hover:scale-110 transition-transform" />
+                  </motion.div>
                   <span className="text-xs font-medium">上传文档</span>
                 </>
               )}
-            </div>
+            </motion.div>
             <input
               ref={fileInputRef}
               type="file"
@@ -294,12 +327,16 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({ onClose }) => {
                   {kbDetail.documents.length > 0 ? (
                     <div className="space-y-2">
                       <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">文档列表</div>
-                      {kbDetail.documents.map((doc) => (
-                        <div
+                      {kbDetail.documents.map((doc, index) => (
+                        <motion.div
                           key={doc.id}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.03 }}
+                          whileHover={{ scale: 1.02, x: 4 }}
                           className={cn(
-                            "bg-white border rounded-lg p-3 cursor-pointer hover:shadow-md transition-all group",
-                            selectedDoc === doc.id && "border-blue-500 shadow-md"
+                            "bg-white border rounded-lg p-3 cursor-pointer hover:shadow-lg transition-all group",
+                            selectedDoc === doc.id && "border-blue-500 shadow-lg bg-blue-50/30"
                           )}
                           onClick={() => setSelectedDoc(doc.id)}
                         >
@@ -326,34 +363,49 @@ export const KnowledgeView: React.FC<KnowledgeViewProps> = ({ onClose }) => {
                               selectedDoc === doc.id && "opacity-100"
                             )} />
                           </div>
-                        </div>
+                        </motion.div>
                       ))}
                     </div>
                   ) : (
-                    <div className="text-sm text-gray-400 py-8 text-center">暂无文档</div>
+                    <EmptyState
+                      icon={FileText}
+                      title="暂无文档"
+                      description="上传文档到知识库开始使用"
+                      size="sm"
+                      className="py-8"
+                    />
                   )}
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-4">
-                  <Database className="w-16 h-16 text-gray-300" />
-                  <p>选择一个知识库开始管理</p>
-                </div>
+                <EmptyState
+                  icon={Database}
+                  title="选择一个知识库"
+                  description="从左侧列表中选择一个知识库开始管理文档"
+                  size="md"
+                />
               )}
             </div>
 
             {/* Document Detail Placeholder */}
             <div className="flex-1 p-6 overflow-y-auto bg-white border-l">
               {selectedDoc ? (
-                <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-4">
-                  <FileText className="w-16 h-16 text-gray-300" />
-                  <p>点击文档查看详情</p>
-                  <Button onClick={() => setIsDocDetailOpen(true)}>查看详情</Button>
-                </div>
+                <EmptyState
+                  icon={FileText}
+                  title="文档详情"
+                  description="查看文档的详细信息和内容"
+                  action={{
+                    label: "查看详情",
+                    onClick: () => setIsDocDetailOpen(true),
+                  }}
+                  size="md"
+                />
               ) : (
-                <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-4">
-                  <Info className="w-16 h-16 text-gray-300" />
-                  <p>选择一个文档查看详情</p>
-                </div>
+                <EmptyState
+                  icon={Info}
+                  title="选择一个文档"
+                  description="从左侧列表中选择一个文档查看详情"
+                  size="md"
+                />
               )}
             </div>
           </div>

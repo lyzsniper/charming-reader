@@ -47,8 +47,14 @@ class ModelConfigurationService:
             model_name=config_create.model_name,
             api_key=config_create.api_key,
             base_url=config_create.base_url,
+            provider=config_create.provider,
             description=config_create.description,
-            is_active=config_create.is_active
+            is_active=config_create.is_active,
+            temperature=config_create.temperature,
+            max_tokens=config_create.max_tokens,
+            top_p=config_create.top_p,
+            frequency_penalty=config_create.frequency_penalty,
+            presence_penalty=config_create.presence_penalty
         )
     
     @staticmethod
@@ -109,8 +115,21 @@ class ModelConfigurationService:
             config.api_key = config_update.api_key
         if config_update.base_url is not None:
             config.base_url = config_update.base_url
+        if config_update.provider is not None:
+            config.provider = config_update.provider
         if config_update.description is not None:
             config.description = config_update.description
+        # 更新模型参数
+        if config_update.temperature is not None:
+            config.temperature = config_update.temperature
+        if config_update.max_tokens is not None:
+            config.max_tokens = config_update.max_tokens
+        if config_update.top_p is not None:
+            config.top_p = config_update.top_p
+        if config_update.frequency_penalty is not None:
+            config.frequency_penalty = config_update.frequency_penalty
+        if config_update.presence_penalty is not None:
+            config.presence_penalty = config_update.presence_penalty
         
         # 处理激活状态
         if config_update.is_active is not None:
@@ -156,11 +175,35 @@ class ModelConfigurationService:
         return result
     
     @staticmethod
-    def get_model_for_agent(db: Session) -> Dict[str, Any]:
+    def get_model_for_agent(db: Session, model_id: Optional[UUID] = None) -> Dict[str, Any]:
         """
         获取 Agent 使用的模型配置
-        业务逻辑：优先使用用户配置的激活模型，否则使用默认配置
+        业务逻辑：优先使用指定的model_id，其次使用用户配置的激活模型，最后使用默认配置
+        
+        Args:
+            model_id: 指定的模型配置ID，如果为None则使用激活的模型
         """
+        # 优先使用指定的model_id
+        if model_id:
+            user_config = ModelConfigurationDAO.get_by_id(db, model_id)
+            if user_config:
+                logger.info(f"使用指定的模型配置: id={model_id}, model={user_config.model_name}")
+                return {
+                    "model": user_config.model_name,
+                    "api_key": user_config.api_key,
+                    "base_url": user_config.base_url,
+                    "provider": user_config.provider,
+                    "temperature": user_config.temperature,
+                    "max_tokens": user_config.max_tokens,
+                    "top_p": user_config.top_p,
+                    "frequency_penalty": user_config.frequency_penalty,
+                    "presence_penalty": user_config.presence_penalty,
+                    "source": "user",
+                    "description": user_config.description
+                }
+            else:
+                logger.warning(f"指定的模型配置不存在: id={model_id}，使用默认配置")
+        
         # 尝试获取用户配置的激活模型
         user_config = ModelConfigurationService.get_active_model_configuration(db)
         
@@ -170,6 +213,12 @@ class ModelConfigurationService:
                 "model": user_config.model_name,
                 "api_key": user_config.api_key,
                 "base_url": user_config.base_url,
+                "provider": user_config.provider,
+                "temperature": user_config.temperature,
+                "max_tokens": user_config.max_tokens,
+                "top_p": user_config.top_p,
+                "frequency_penalty": user_config.frequency_penalty,
+                "presence_penalty": user_config.presence_penalty,
                 "source": "user",
                 "description": user_config.description
             }
@@ -180,6 +229,12 @@ class ModelConfigurationService:
             "model": settings.DEFAULT_LLM_MODEL,
             "api_key": settings.QWEN_API_KEY or settings.GLM_API_KEY or settings.OPENAI_API_KEY,
             "base_url": settings.QWEN_BASE_URL,
+            "provider": "openai",
+            "temperature": 0.7,
+            "max_tokens": None,
+            "top_p": None,
+            "frequency_penalty": None,
+            "presence_penalty": None,
             "source": "default",
             "description": "系统默认模型"
         }

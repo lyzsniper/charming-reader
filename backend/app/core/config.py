@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     SKILLS_AUTO_ACTIVATION: bool = True
     SKILLS_MAX_CONCURRENT: int = 3
     
+    # GitHub MCP Configuration
+    GITHUB_MCP_URL: str = os.getenv("GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/")
+    # Token不应包含"Bearer "前缀，代码会自动添加；如果环境变量中已包含则直接使用
+    GITHUB_MCP_TOKEN: Optional[str] = os.getenv("GITHUB_MCP_TOKEN", "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")
+    
     class Config:
         env_file = ".env"
         extra = "ignore" # Allow extra fields in .env

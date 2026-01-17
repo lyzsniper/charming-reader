@@ -31,9 +31,21 @@ class SkillLoader:
         Args:
             skills_dir: 技能目录路径
         """
-        self.skills_dir = Path(skills_dir)
+        # 将相对路径转换为绝对路径
+        skills_dir_path = Path(skills_dir)
+        if not skills_dir_path.is_absolute():
+            # 如果是相对路径，从项目根目录开始
+            # loader.py在 backend/app/skills/loader.py
+            # 项目根目录在 backend/ 的上一级
+            current_file = Path(__file__)  # backend/app/skills/loader.py
+            project_root = current_file.parent.parent.parent.parent  # 从loader.py到项目根目录
+            skills_dir_path = project_root / skills_dir
+        
+        self.skills_dir = skills_dir_path
         self._metadata_cache: Dict[str, SkillMetadata] = {}
         self._content_cache: Dict[str, str] = {}
+        
+        print(f"[SkillLoader] Initialized: skills_dir={skills_dir}, absolute_path={self.skills_dir.resolve()}")
     
     def scan_skills(self) -> List[SkillMetadata]:
         """
@@ -44,25 +56,43 @@ class SkillLoader:
         """
         skills = []
         
-        if not self.skills_dir.exists():
-            print(f"Skills directory not found: {self.skills_dir}")
+        # self.skills_dir 已经是绝对路径（在__init__中处理）
+        skills_dir_path = self.skills_dir
+        
+        # 使用英文日志避免编码问题
+        print(f"[scan_skills] Skills directory: {skills_dir_path} (absolute: {skills_dir_path.resolve()})")
+        print(f"[scan_skills] Directory exists: {skills_dir_path.exists()}")
+        
+        if not skills_dir_path.exists():
+            print(f"[scan_skills] WARNING: Skills directory not found: {skills_dir_path}")
             return skills
         
         # 遍历技能目录
-        for skill_dir in self.skills_dir.iterdir():
+        skill_dirs = list(skills_dir_path.iterdir())
+        print(f"[scan_skills] Found {len(skill_dirs)} subdirectories/files")
+        
+        for skill_dir in skill_dirs:
             if skill_dir.is_dir():
                 skill_file = skill_dir / "SKILL.md"
+                print(f"[scan_skills] Checking skill directory: {skill_dir.name}, SKILL.md exists: {skill_file.exists()}")
                 
                 if skill_file.exists():
                     try:
+                        print(f"[scan_skills] Parsing: {skill_file}")
                         metadata = self._parse_skill_metadata(skill_file)
                         if metadata:
                             skills.append(metadata)
                             # 缓存元数据
                             self._metadata_cache[metadata.name] = metadata
+                            print(f"[scan_skills] Successfully loaded skill: {metadata.name}")
+                        else:
+                            print(f"[scan_skills] Failed to parse: {skill_file} (returned None)")
                     except Exception as e:
-                        print(f"Error loading skill from {skill_file}: {e}")
+                        print(f"[scan_skills] Error loading skill from {skill_file}: {type(e).__name__}: {e}")
+                        import traceback
+                        traceback.print_exc()
         
+        print(f"[scan_skills] Total loaded: {len(skills)} skills")
         return skills
     
     def _parse_skill_metadata(self, skill_file: Path) -> Optional[SkillMetadata]:
@@ -99,6 +129,12 @@ class SkillLoader:
                     print(f"Missing required field '{field}' in {skill_file}")
                     return None
             
+            # 调试：打印加载的skill信息
+            skill_name = metadata_dict['name']
+            triggers = metadata_dict.get('triggers', [])
+            # 避免编码问题，只打印基本信息
+            print(f"Loaded skill: {skill_name}, triggers count: {len(triggers)}")
+            
             return SkillMetadata(
                 name=metadata_dict['name'],
                 description=metadata_dict['description'],
@@ -108,6 +144,12 @@ class SkillLoader:
             )
         except yaml.YAMLError as e:
             print(f"Error parsing YAML in {skill_file}: {e}")
+            print(f"YAML content: {yaml_content[:200]}...")
+            return None
+        except Exception as e:
+            print(f"Unexpected error parsing skill {skill_file}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def load_skill_content(self, skill_name: str) -> Optional[str]:

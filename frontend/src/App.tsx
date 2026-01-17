@@ -3,6 +3,9 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { LoadingSpinner } from './components/common/LoadingSpinner';
 import { Toaster } from './components/ui/toast-sonner';
 import { Sidebar } from './components/layout/Sidebar';
+import { KeyboardShortcutsModal } from './components/common/KeyboardShortcutsModal';
+import { useKeyboardShortcuts, COMMON_SHORTCUTS } from './hooks/useKeyboardShortcuts';
+import { ThemeProvider } from './hooks/useTheme';
 
 // 懒加载组件以提升首屏加载速度
 const HomeView = lazy(() => import('./components/home/HomeView').then(m => ({ default: m.HomeView })));
@@ -20,6 +23,7 @@ function App() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
   const handleStartChat = (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string) => {
     setInitialMessage(message ?? null);
@@ -31,35 +35,94 @@ function App() {
   };
 
   const handleGoHome = () => {
+    // 关闭所有打开的面板
+    setIsKnowledgeOpen(false);
+    setIsHistoryOpen(false);
+    setIsSettingsOpen(false);
+    // 切换到首页
     setViewMode('home');
     setCurrentFile(null);
     setInitialMessage(null);
+    setSelectedSessionId(null);
   };
 
   const handleOpenKnowledge = () => {
-    if (viewMode === 'workspace') {
-      setIsKnowledgeOpen(true);
-    } else {
-      // 如果不在工作区，先切换到工作区再打开知识库
-      setViewMode('workspace');
-      setTimeout(() => setIsKnowledgeOpen(true), 100);
+    // 如果已经在 workspace 且知识库已打开，则关闭；否则打开
+    if (viewMode === 'workspace' && isKnowledgeOpen) {
+      setIsKnowledgeOpen(false);
+      return;
     }
+    
+    // 如果不在工作区，先切换到工作区
+    if (viewMode !== 'workspace') {
+      setViewMode('workspace');
+    }
+    
+    // 确保关闭历史记录和设置面板，避免同时打开多个面板
+    if (isHistoryOpen) {
+      setIsHistoryOpen(false);
+    }
+    if (isSettingsOpen) {
+      setIsSettingsOpen(false);
+    }
+    
+    // 使用 useEffect 的批处理特性，React 会自动批处理这些状态更新
+    setIsKnowledgeOpen(true);
   };
 
   const handleOpenHistory = () => {
-    setIsHistoryOpen(true);
+    // 如果历史记录已打开，则关闭；否则打开
+    if (isHistoryOpen) {
+      setIsHistoryOpen(false);
+    } else {
+      // 确保关闭知识库，避免同时打开多个面板
+      if (isKnowledgeOpen) {
+        setIsKnowledgeOpen(false);
+      }
+      setIsHistoryOpen(true);
+    }
   };
 
+  // 全局键盘快捷键
+  useKeyboardShortcuts([
+    {
+      ...COMMON_SHORTCUTS.HELP,
+      action: () => setIsShortcutsOpen(true),
+    },
+    {
+      key: 'Escape',
+      action: () => {
+        if (isKnowledgeOpen) setIsKnowledgeOpen(false);
+        if (isHistoryOpen) setIsHistoryOpen(false);
+        if (isSettingsOpen) setIsSettingsOpen(false);
+      },
+    },
+  ]);
+
   return (
-    <ErrorBoundary>
-      <div className="min-h-screen bg-background text-foreground font-sans">
+    <ThemeProvider>
+      <ErrorBoundary>
+        <div className="min-h-screen bg-background text-foreground font-sans">
         <div className="flex h-screen w-full bg-background overflow-hidden relative">
           {/* 侧边栏 - 在所有页面都显示 */}
           <Sidebar 
             onOpenKnowledge={handleOpenKnowledge}
             onOpenHistory={handleOpenHistory}
-            onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenSettings={() => {
+              if (isSettingsOpen) {
+                setIsSettingsOpen(false);
+              } else {
+                // 关闭其他面板
+                if (isKnowledgeOpen) setIsKnowledgeOpen(false);
+                if (isHistoryOpen) setIsHistoryOpen(false);
+                setIsSettingsOpen(true);
+              }
+            }}
             onGoHome={handleGoHome}
+            isKnowledgeOpen={isKnowledgeOpen}
+            isHistoryOpen={isHistoryOpen}
+            isSettingsOpen={isSettingsOpen}
+            viewMode={viewMode}
           />
           
           {/* 主内容区域 */}
@@ -90,8 +153,13 @@ function App() {
           </div>
         </div>
         <Toaster />
+        <KeyboardShortcutsModal
+          isOpen={isShortcutsOpen}
+          onClose={() => setIsShortcutsOpen(false)}
+        />
       </div>
-    </ErrorBoundary>
+      </ErrorBoundary>
+    </ThemeProvider>
   );
 }
 

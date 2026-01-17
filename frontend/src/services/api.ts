@@ -18,11 +18,18 @@ export const API_ROUTES = {
   chatSession: (sessionId: string) => `/chat/sessions/${sessionId}`,
   chatSessionMessages: (sessionId: string) => `/chat/sessions/${sessionId}/messages`,
   chatSessionHistory: (sessionId: string) => `/chat/sessions/${sessionId}/history`,
+  generateSummaryPlan: (sessionId: string) => `/chat/sessions/${sessionId}/generate-summary`,
   translate: '/translate',
   translateBatch: '/translate/batch',
   translateDetect: '/translate/detect',
   translateProviders: '/translate/providers',
   translateDocument: '/translate/document',
+  // 模型配置相关接口
+  modelConfigurations: '/model-configurations',
+  modelConfiguration: (id: string) => `/model-configurations/${id}`,
+  activeModelConfiguration: '/model-configurations/active',
+  activateModelConfiguration: (id: string) => `/model-configurations/${id}/activate`,
+  currentModelInfo: '/model-configurations/current/info',
 } as const;
 
 type Query = Record<string, string | number | boolean | null | undefined>;
@@ -199,12 +206,169 @@ export interface SearchResult {
   [key: string]: unknown;
 }
 
-const chat = (payload: ChatRequest) => {
-  return request<ChatResponse>(API_ROUTES.chat, {
+interface ChatOptions {
+  message: string;
+  session_id?: string | null;
+  user_id?: string | null;
+  model_id?: string | null;
+  knowledge_base_ids?: string[] | null;
+  use_rag?: boolean;
+  rag_top_k?: number;
+  enable_rerank?: boolean;
+  onSkillLoading?: (data: { step: string; message: string; skill_name?: string }) => void;
+  onSkillActivated?: (data: { skill_name: string; description: string; version?: string }) => void;
+  onSkillContent?: (data: { skill_name: string; content_length: number }) => void;
+  onRagRetrieval?: (data: { step: string; message: string; type?: string; count?: number }) => void;
+  onRagSources?: (data: { sources: Array<Record<string, unknown>>; type?: string }) => void;
+  onAgentThinking?: (data: { message: string }) => void;
+  onAgentContent?: (data: { content: string; is_complete: boolean }) => void;
+  onAgentComplete?: (response: ChatResponse) => void;
+  onToolCall?: (data: { tool_name: string; arguments: Record<string, any>; status: string; timestamp: string }) => void;
+  onToolResult?: (data: { tool_name: string; result: any; success: boolean; error?: string; timestamp: string }) => void;
+  onError?: (error: string) => void;
+}
+
+const chat = async (options: ChatOptions): Promise<void> => {
+  const url = buildUrl(API_ROUTES.chat);
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      message: options.message,
+      session_id: options.session_id,
+      user_id: options.user_id || 'default_user',
+      model_id: options.model_id || undefined,
+      knowledge_base_ids: options.knowledge_base_ids,
+      use_rag: options.use_rag,
+      rag_top_k: options.rag_top_k,
+      enable_rerank: options.enable_rerank,
+    }),
   });
+
+  if (!response.ok) {
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    const message = data?.detail || data?.error || response.statusText;
+    throw new Error(typeof message === 'string' ? message : '请求失败');
+  }
+
+  // 使用SSE流式响应
+  if (response.headers.get('content-type')?.includes('text/event-stream')) {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    
+    if (!reader) {
+      throw new Error('无法读取响应流');
+    }
+
+    let buffer = '';
+    let currentEventType = '';
+    let accumulatedContent = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue; // 跳过空行
+        
+        if (line.startsWith('event: ')) {
+          currentEventType = line.substring(7).trim();
+        } else if (line.startsWith('data: ')) {
+          const dataStr = line.substring(6).trim();
+          if (dataStr) {
+            try {
+              const data = JSON.parse(dataStr);
+              
+              // 添加调试日志
+              console.log(`[SSE] 收到事件: ${currentEventType}`, data);
+              
+              // 处理技能加载事件
+              if (currentEventType === 'skill_loading' && options.onSkillLoading) {
+                console.log('[SSE] 处理 skill_loading 事件');
+                options.onSkillLoading(data);
+              } 
+              // 处理技能激活事件
+              else if (currentEventType === 'skill_activated' && options.onSkillActivated) {
+                console.log('[SSE] 处理 skill_activated 事件');
+                options.onSkillActivated(data);
+              } 
+              // 处理技能内容事件
+              else if (currentEventType === 'skill_content' && options.onSkillContent) {
+                console.log('[SSE] 处理 skill_content 事件');
+                options.onSkillContent(data);
+              } 
+              // 处理RAG检索事件
+              else if (currentEventType === 'rag_retrieval' && options.onRagRetrieval) {
+                console.log('[SSE] 处理 rag_retrieval 事件');
+                options.onRagRetrieval(data);
+              } 
+              // 处理RAG检索结果事件
+              else if (currentEventType === 'rag_sources' && options.onRagSources) {
+                console.log('[SSE] 处理 rag_sources 事件, sources数量:', data.sources?.length);
+                options.onRagSources(data);
+              } 
+              // 处理Agent思考事件
+              else if (currentEventType === 'agent_thinking' && options.onAgentThinking) {
+                console.log('[SSE] 处理 agent_thinking 事件');
+                options.onAgentThinking(data);
+              } 
+              // 处理Agent内容事件（流式输出）
+              else if (currentEventType === 'agent_content' && options.onAgentContent) {
+                // data.content 是增量内容，需要累积
+                // 注意：如果 is_complete 为 true 但 content 为空，表示只是完成标记
+                if (data.content) {
+                  accumulatedContent += data.content;
+                }
+                // 即使 content 为空，也要发送更新（可能是完成标记）
+                options.onAgentContent({ 
+                  content: accumulatedContent, 
+                  is_complete: data.is_complete || false 
+                });
+              } 
+              // 处理Agent完成事件
+              else if (currentEventType === 'agent_complete' && options.onAgentComplete) {
+                // 如果agent_complete事件中有response，使用它；否则使用累积的内容
+                if (data.response && accumulatedContent !== data.response) {
+                  accumulatedContent = data.response;
+                }
+                options.onAgentComplete(data as ChatResponse);
+              } 
+              // 处理工具调用事件
+              else if (currentEventType === 'tool_call' && options.onToolCall) {
+                console.log('[SSE] 处理 tool_call 事件:', data);
+                options.onToolCall(data);
+              }
+              // 处理工具调用结果事件
+              else if (currentEventType === 'tool_result' && options.onToolResult) {
+                console.log('[SSE] 处理 tool_result 事件:', data);
+                options.onToolResult(data);
+              }
+              // 处理错误事件
+              else if (currentEventType === 'error' && options.onError) {
+                options.onError(data.error || '未知错误');
+              }
+            } catch (e) {
+              console.error('解析SSE数据失败:', e, dataStr, '事件类型:', currentEventType);
+            }
+          }
+          // 重置事件类型，准备处理下一个事件
+          currentEventType = '';
+        }
+      }
+    }
+  } else {
+    // 兼容旧格式（JSON响应）
+    const data = await response.json();
+    if (options.onAgentComplete) {
+      options.onAgentComplete(data as ChatResponse);
+    }
+  }
 };
 
 interface ChatWithFileOptions {
@@ -212,6 +376,7 @@ interface ChatWithFileOptions {
   message: string;
   session_id?: string | null;
   user_id?: string | null;
+  model_id?: string | null;
   knowledge_base_ids?: string[] | null;
   use_rag?: boolean;
   rag_top_k?: number;
@@ -222,7 +387,16 @@ interface ChatWithFileOptions {
     progress?: number;
     details?: Record<string, unknown>;
   }) => void;
+  onSkillLoading?: (data: { step: string; message: string; skill_name?: string }) => void;
+  onSkillActivated?: (data: { skill_name: string; description: string; version?: string }) => void;
+  onSkillContent?: (data: { skill_name: string; content_length: number }) => void;
+  onRagRetrieval?: (data: { step: string; message: string; type?: string; count?: number }) => void;
+  onRagSources?: (data: { sources: Array<Record<string, unknown>>; type?: string }) => void;
+  onAgentThinking?: (data: { message: string }) => void;
+  onAgentContent?: (data: { content: string; is_complete: boolean }) => void;
   onChatResponse?: (response: ChatResponse) => void;
+  onToolCall?: (data: { tool_name: string; arguments: Record<string, any>; status: string; timestamp: string }) => void;
+  onToolResult?: (data: { tool_name: string; result: any; success: boolean; error?: string; timestamp: string }) => void;
   onError?: (error: string) => void;
 }
 
@@ -237,6 +411,9 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
     formData.append('session_id', options.session_id);
   }
   formData.append('user_id', options.user_id || 'default_user');
+  if (options.model_id) {
+    formData.append('model_id', options.model_id);
+  }
   if (options.knowledge_base_ids?.length) {
     formData.append('knowledge_base_ids', options.knowledge_base_ids.join(','));
   }
@@ -269,6 +446,7 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
 
     let buffer = '';
     let currentEventType = '';
+    let accumulatedContent = ''; // 累积流式内容
     
     while (true) {
       const { done, value } = await reader.read();
@@ -279,7 +457,9 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
       buffer = lines.pop() || '';
       
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        const line = lines[i].trim();
+        if (!line) continue; // 跳过空行
+        
         if (line.startsWith('event: ')) {
           currentEventType = line.substring(7).trim();
         } else if (line.startsWith('data: ')) {
@@ -288,14 +468,75 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
             try {
               const data = JSON.parse(dataStr);
               
+              // 处理向量化步骤事件
               if (currentEventType === 'vectorization_step' && options.onVectorizationStep) {
                 options.onVectorizationStep(data);
-              } else if (currentEventType === 'chat_response' && options.onChatResponse) {
+              } 
+              // 处理技能加载事件
+              else if (currentEventType === 'skill_loading' && options.onSkillLoading) {
+                options.onSkillLoading(data);
+              } 
+              // 处理技能激活事件
+              else if (currentEventType === 'skill_activated' && options.onSkillActivated) {
+                options.onSkillActivated(data);
+              } 
+              // 处理技能内容事件
+              else if (currentEventType === 'skill_content' && options.onSkillContent) {
+                options.onSkillContent(data);
+              } 
+              // 处理RAG检索事件
+              else if (currentEventType === 'rag_retrieval' && options.onRagRetrieval) {
+                options.onRagRetrieval(data);
+              } 
+              // 处理RAG检索结果事件
+              else if (currentEventType === 'rag_sources' && options.onRagSources) {
+                options.onRagSources(data);
+              } 
+              // 处理Agent思考事件
+              else if (currentEventType === 'agent_thinking' && options.onAgentThinking) {
+                options.onAgentThinking(data);
+              } 
+              // 处理Agent内容事件（流式输出）
+              else if (currentEventType === 'agent_content' && options.onAgentContent) {
+                // data.content 是增量内容，需要累积
+                // 注意：如果 is_complete 为 true 但 content 为空，表示只是完成标记
+                if (data.content) {
+                  accumulatedContent += data.content;
+                }
+                // 即使 content 为空，也要发送更新（可能是完成标记）
+                options.onAgentContent({ 
+                  content: accumulatedContent, 
+                  is_complete: data.is_complete || false 
+                });
+              } 
+              // 处理Agent完成事件
+              else if (currentEventType === 'agent_complete' && options.onChatResponse) {
+                // 如果agent_complete事件中有response，使用它；否则使用累积的内容
+                if (data.response && accumulatedContent !== data.response) {
+                  accumulatedContent = data.response;
+                }
                 options.onChatResponse(data as ChatResponse);
-              } else if (currentEventType === 'error' && options.onError) {
+              } 
+              // 处理聊天响应事件（兼容旧格式）
+              else if (currentEventType === 'chat_response' && options.onChatResponse) {
+                options.onChatResponse(data as ChatResponse);
+              }
+              // 处理工具调用事件
+              else if (currentEventType === 'tool_call' && options.onToolCall) {
+                console.log('[SSE] 处理 tool_call 事件:', data);
+                options.onToolCall(data);
+              }
+              // 处理工具调用结果事件
+              else if (currentEventType === 'tool_result' && options.onToolResult) {
+                console.log('[SSE] 处理 tool_result 事件:', data);
+                options.onToolResult(data);
+              }
+              // 处理错误事件
+              else if (currentEventType === 'error' && options.onError) {
                 options.onError(data.error || '未知错误');
-              } else if (currentEventType === 'chat_start' && options.onVectorizationStep) {
-                // chat_start 也通过 onVectorizationStep 传递
+              } 
+              // 处理聊天开始事件
+              else if (currentEventType === 'chat_start' && options.onVectorizationStep) {
                 options.onVectorizationStep({
                   step: 'chat_start',
                   message: data.message || '开始生成回答...',
@@ -304,10 +545,11 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
                 });
               }
             } catch (e) {
-              console.error('解析SSE数据失败:', e, dataStr);
+              console.error('解析SSE数据失败:', e, dataStr, '事件类型:', currentEventType);
             }
           }
-          currentEventType = ''; // 重置事件类型
+          // 重置事件类型，准备处理下一个事件
+          currentEventType = '';
         }
       }
     }
@@ -639,6 +881,132 @@ const getChatHistory = (sessionId: string, params?: { skip?: number; limit?: num
   });
 };
 
+// 一键总结为方案相关接口
+export interface SummaryPlanResponse {
+  success: boolean;
+  data: {
+    object_name: string;
+    download_url: string;
+    plan_content: string;
+    messages_used: number;
+    total_messages: number;
+  };
+  error?: string;
+}
+
+const generateSummaryPlan = (sessionId: string, params?: { top_k?: number; max_messages?: number }) => {
+  return request<SummaryPlanResponse>(API_ROUTES.generateSummaryPlan(sessionId), {
+    method: 'POST',
+    query: {
+      top_k: params?.top_k ?? 20,
+      max_messages: params?.max_messages,
+    },
+  });
+};
+
+// 模型配置相关接口类型
+export interface ModelConfiguration {
+  id: string;
+  name: string;
+  model_name: string;
+  api_key?: string | null;
+  base_url?: string | null;
+  provider?: string | null;
+  description?: string | null;
+  is_active: boolean;
+  temperature?: number | null;
+  max_tokens?: number | null;
+  top_p?: number | null;
+  frequency_penalty?: number | null;
+  presence_penalty?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelConfigurationCreate {
+  name: string;
+  model_name: string;
+  api_key?: string | null;
+  base_url?: string | null;
+  provider?: string | null;
+  description?: string | null;
+  is_active?: boolean;
+  temperature?: number | null;
+  max_tokens?: number | null;
+  top_p?: number | null;
+  frequency_penalty?: number | null;
+  presence_penalty?: number | null;
+}
+
+export interface ModelConfigurationUpdate {
+  name?: string;
+  model_name?: string;
+  api_key?: string | null;
+  base_url?: string | null;
+  provider?: string | null;
+  description?: string | null;
+  is_active?: boolean;
+  temperature?: number | null;
+  max_tokens?: number | null;
+  top_p?: number | null;
+  frequency_penalty?: number | null;
+  presence_penalty?: number | null;
+}
+
+const listModelConfigurations = (params?: { skip?: number; limit?: number }) => {
+  return request<ModelConfiguration[]>(API_ROUTES.modelConfigurations, {
+    method: 'GET',
+    query: {
+      skip: params?.skip ?? 0,
+      limit: params?.limit ?? 100,
+    },
+  });
+};
+
+const getModelConfiguration = (id: string) => {
+  return request<ModelConfiguration>(API_ROUTES.modelConfiguration(id), {
+    method: 'GET',
+  });
+};
+
+const getActiveModelConfiguration = () => {
+  return request<ModelConfiguration>(API_ROUTES.activeModelConfiguration, {
+    method: 'GET',
+  });
+};
+
+const createModelConfiguration = (config: ModelConfigurationCreate) => {
+  return request<ModelConfiguration>(API_ROUTES.modelConfigurations, {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+};
+
+const updateModelConfiguration = (id: string, config: ModelConfigurationUpdate) => {
+  return request<ModelConfiguration>(API_ROUTES.modelConfiguration(id), {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+};
+
+const deleteModelConfiguration = (id: string) => {
+  return request<void>(API_ROUTES.modelConfiguration(id), {
+    method: 'DELETE',
+  });
+};
+
+const activateModelConfiguration = (id: string) => {
+  return request<ModelConfiguration>(API_ROUTES.activateModelConfiguration(id), {
+    method: 'POST',
+  });
+};
+
+const getCurrentModelInfo = () => {
+  return request<{ model_name: string; source: string; description?: string }>(API_ROUTES.currentModelInfo, {
+    method: 'GET',
+  });
+};
+
 export const api = {
   routes: API_ROUTES,
   chat,
@@ -665,6 +1033,16 @@ export const api = {
   deleteChatSession,
   getChatMessages,
   getChatHistory,
+  generateSummaryPlan,
   translate,
   translateDocument,
+  // 模型配置相关API
+  listModelConfigurations,
+  getModelConfiguration,
+  getActiveModelConfiguration,
+  createModelConfiguration,
+  updateModelConfiguration,
+  deleteModelConfiguration,
+  activateModelConfiguration,
+  getCurrentModelInfo,
 };

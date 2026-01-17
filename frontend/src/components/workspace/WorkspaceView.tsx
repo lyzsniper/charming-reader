@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
+import { motion, AnimatePresence } from 'framer-motion';
 import { ChatPanel } from './ChatPanel';
 import { ContextPanel } from './ContextPanel';
 import { KnowledgeView } from '../knowledge/KnowledgeView';
 import { History, X, Clock, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { EmptyState } from '@/components/common/EmptyState';
 import { api } from '@/services/api';
 import type { SessionHistoryItem } from '@/services/api';
 
@@ -50,14 +52,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     setViewMode('workspace');
     onKnowledgeClose?.();
   };
-  const [isHistoryOpen, setIsHistoryOpen] = useState(externalIsHistoryOpen || false);
   
-  // 同步外部传入的 isHistoryOpen
-  useEffect(() => {
-    if (externalIsHistoryOpen !== undefined) {
-      setIsHistoryOpen(externalIsHistoryOpen);
-    }
-  }, [externalIsHistoryOpen]);
+  // 直接使用外部传入的 isHistoryOpen，不维护内部状态
+  const isHistoryOpen = externalIsHistoryOpen || false;
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [uploadState, setUploadState] = useState<UploadState>('idle');
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -66,8 +63,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(externalInitialSessionId || null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [initialHistory, setInitialHistory] = useState<Array<{ role: 'user' | 'agent' | 'model'; text: string; created_at?: string | null }>>([]);
+  const [initialHistory, setInitialHistory] = useState<Array<{ role: 'user' | 'agent' | 'model'; text: string; created_at?: string | null; sources?: any[] }>>([]);
   const [showContextPanel, setShowContextPanel] = useState(false);
+  const [ragSources, setRagSources] = useState<any[] | null>(null); // RAG 检索结果
 
   // 当外部传入 initialSessionId 时，加载该会话的历史
   useEffect(() => {
@@ -83,9 +81,17 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       setShowContextPanel(true); // 有文件时自动显示 ContextPanel
       return () => URL.revokeObjectURL(url);
     }
-    setFileUrl(null);
-    setShowContextPanel(false); // 没有文件时隐藏 ContextPanel
-  }, [file]);
+    // 如果有 RAG sources，也显示 ContextPanel
+    if (ragSources && ragSources.length > 0) {
+      setShowContextPanel(true);
+    } else if (!file) {
+      setFileUrl(null);
+      // 如果没有文件也没有 RAG sources，隐藏 ContextPanel
+      if (!ragSources || ragSources.length === 0) {
+        setShowContextPanel(false);
+      }
+    }
+  }, [file, ragSources]);
 
   // 不再自动上传文件到知识库，而是让ChatPanel直接处理文件对话
   // 文件上传到知识库的逻辑已移除，改为在ChatPanel中使用chatWithFile API
@@ -134,10 +140,20 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
             // 标准化 role：'assistant' -> 'agent'，'user' -> 'user'
             const normalizedRole: 'user' | 'agent' = msg.role === 'assistant' ? 'agent' : 'user';
             
+            // 从 message_metadata 中提取 sources
+            let sources: any[] | undefined = undefined;
+            if (msg.message_metadata) {
+              // 检查是否有 sources 字段
+              if (msg.message_metadata.sources && Array.isArray(msg.message_metadata.sources)) {
+                sources = msg.message_metadata.sources;
+              }
+            }
+            
             return {
               role: normalizedRole,
               text: msg.content || '',
               created_at: msg.created_at || null,
+              sources: sources, // 包含 sources 信息
             };
           });
         setInitialHistory(messages);
@@ -158,12 +174,13 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
     <div className="flex h-full w-full bg-background overflow-hidden relative">
       {/* Main Content Area */}
       {viewMode === 'workspace' ? (
-        <div className="flex-1 flex flex-col h-full">
-          {showContextPanel && (file || fileUrl) ? (
-            <PanelGroup direction="horizontal" className="flex-1">
+        <div className="flex-1 flex flex-col h-full min-h-0">
+          {showContextPanel && (file || fileUrl || (ragSources && ragSources.length > 0)) ? (
+            <PanelGroup direction="horizontal" className="flex-1 min-h-0 overflow-hidden">
               {/* Chat Panel - 40% default */}
-              <Panel defaultSize={40} minSize={30} order={1} className="bg-white z-10 min-h-0">
-                <ChatPanel
+              <Panel defaultSize={40} minSize={30} order={1} className="bg-white z-10">
+                <div className="h-full w-full overflow-hidden flex flex-col">
+                  <ChatPanel
                   knowledgeBaseIds={knowledgeBaseIds}
                   initialMessage={selectedSessionId ? null : (initialMessage || (file ? '请分析这个文档' : undefined))}
                   conversationKey={conversationKey}
@@ -173,18 +190,31 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   initialHistory={initialHistory}
                   initialFile={selectedSessionId ? null : file}
                   onSessionIdChange={setCurrentSessionId}
+                  onSourceClick={(sources) => {
+                    setRagSources(sources);
+                    setShowContextPanel(true);
+                  }}
                 />
+                </div>
               </Panel>
               
               <PanelResizeHandle className="w-1 bg-gray-100 hover:bg-blue-500 transition-colors cursor-col-resize z-20" />
               
               {/* Context Panel - 60% default */}
               <Panel defaultSize={60} minSize={30} order={2} className="bg-gray-50">
-                <ContextPanel fileUrl={fileUrl} file={file} sessionId={currentSessionId} />
+                <div className="h-full w-full overflow-hidden flex flex-col">
+                  <ContextPanel 
+                    fileUrl={fileUrl} 
+                    file={file} 
+                    sessionId={currentSessionId}
+                    ragSources={ragSources}
+                    onClose={() => setShowContextPanel(false)}
+                  />
+                </div>
               </Panel>
             </PanelGroup>
           ) : (
-            <div className="flex-1 flex flex-col h-full">
+            <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
               <ChatPanel
                 knowledgeBaseIds={knowledgeBaseIds}
                 initialMessage={selectedSessionId ? null : (initialMessage || (file ? '请分析这个文档' : undefined))}
@@ -195,6 +225,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 initialHistory={initialHistory}
                 initialFile={selectedSessionId ? null : file}
                 onSessionIdChange={setCurrentSessionId}
+                onSourceClick={(sources) => {
+                  setRagSources(sources);
+                  setShowContextPanel(true);
+                }}
               />
             </div>
           )}
@@ -206,13 +240,26 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
       )}
       
       {/* History Slide-over */}
-      {isHistoryOpen && (
-        <>
-          <div className="fixed inset-0 bg-black/20 backdrop-blur-[1px] z-40" onClick={() => {
-            setIsHistoryOpen(false);
-            onHistoryClose?.();
-          }} />
-          <div className="fixed inset-y-0 left-16 z-50 w-80 bg-white border-r shadow-2xl animate-in slide-in-from-left duration-200">
+      <AnimatePresence>
+        {isHistoryOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 bg-black/20 backdrop-blur-[1px] z-40" 
+              onClick={() => {
+                onHistoryClose?.();
+              }} 
+            />
+            <motion.div
+              initial={{ x: -320, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: -320, opacity: 0 }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-16 z-50 w-80 bg-white border-r shadow-2xl"
+            >
             <div className="flex flex-col h-full">
               <div className="p-4 border-b flex items-center justify-between bg-gray-50/50">
                 <div className="flex items-center gap-2">
@@ -220,7 +267,6 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   <h2 className="font-semibold">History</h2>
                 </div>
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => {
-                  setIsHistoryOpen(false);
                   onHistoryClose?.();
                 }}>
                   <X className="w-4 h-4" />
@@ -233,11 +279,15 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                     <div className="text-sm text-gray-400">加载中...</div>
                   </div>
                 ) : sessions.length === 0 ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="text-sm text-gray-400">暂无对话历史</div>
-                  </div>
+                  <EmptyState
+                    icon={History}
+                    title="暂无对话历史"
+                    description="开始新的对话后，历史记录会显示在这里"
+                    size="sm"
+                    className="py-8"
+                  />
                 ) : (
-                  sessions.map((session) => {
+                  sessions.map((session, index) => {
                     const timeAgo = session.last_message_time
                       ? new Date(session.last_message_time * 1000)
                       : null;
@@ -251,17 +301,23 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                       : '未知时间';
                     
                     return (
-                      <button
+                      <motion.button
                         key={session.session_id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: index * 0.03 }}
+                        whileHover={{ scale: 1.02, x: 4 }}
+                        whileTap={{ scale: 0.98 }}
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
                           // 加载会话历史消息
                           setSelectedSessionId(session.session_id);
-                          setIsHistoryOpen(false);
+                          // 关闭历史记录面板
+                          onHistoryClose?.();
                           // 不立即清空历史，等待加载完成
                         }}
-                        className="w-full text-left p-3 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200 transition-colors group cursor-pointer active:bg-gray-100"
+                        className="w-full text-left p-3 rounded-lg hover:bg-gradient-to-r hover:from-gray-50 hover:to-blue-50/30 border border-transparent hover:border-blue-200 transition-all group cursor-pointer shadow-sm hover:shadow-md"
                       >
                         <div className="flex items-start gap-3">
                           <div className="flex-shrink-0 mt-0.5">
@@ -281,22 +337,39 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                             </div>
                           </div>
                         </div>
-                      </button>
+                      </motion.button>
                     );
                   })
                 )}
               </div>
             </div>
-          </div>
-        </>
-      )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
       
       {/* Settings Modal - Placeholder */}
-      {isSettingsOpen && (
-        <>
-          <div className="fixed inset-0 bg-black/20 backdrop-blur-[1px] z-40" onClick={() => setIsSettingsOpen(false)} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <AnimatePresence>
+        {isSettingsOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 bg-black/20 backdrop-blur-[1px] z-40" 
+              onClick={() => setIsSettingsOpen(false)} 
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            >
+              <motion.div
+                className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto border border-gray-200"
+              >
               <div className="p-6 border-b flex items-center justify-between">
                 <h2 className="text-xl font-semibold">Settings</h2>
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsSettingsOpen(false)}>
@@ -306,10 +379,11 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               <div className="p-6">
                 <p className="text-gray-500">Settings content goes here...</p>
               </div>
-            </div>
-          </div>
-        </>
-      )}
+              </motion.div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

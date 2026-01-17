@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form, Request, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional, AsyncGenerator
+from typing import List, Optional, AsyncGenerator, Dict, Any
 from uuid import UUID, uuid4
 import shutil
 import os
@@ -9,11 +9,16 @@ import json
 import tempfile
 import queue
 import threading
+import asyncio
 from datetime import datetime
 from sqlalchemy.orm import Session
 from core.db import get_db
 from core.logger import LoggerFactory
-from agents.flow import run_agent_with_rag
+from agents.flow import run_agent_with_rag, run_agent_with_rag_stream
+from agents.education_agent import create_agent as create_education_agent
+from agents.research_management_agent import create_agent as create_research_management_agent
+from agents.industry_application_agent import create_agent as create_industry_application_agent
+from agents.academic_publishing_agent import create_agent as create_academic_publishing_agent
 from services.ingestion import process_pdf
 from services.vectorization_service import VectorizationService
 from services.storage_service import get_storage_service
@@ -24,6 +29,7 @@ from services import (
     DocumentService,
     ModelConfigurationService
 )
+from dao import ModelConfigurationDAO
 from models.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
@@ -87,6 +93,112 @@ def _format_sse_event(event_type: str, data: dict) -> str:
     """格式化SSE事件"""
     data_json = json.dumps(data, ensure_ascii=False)
     return f"event: {event_type}\ndata: {data_json}\n\n"
+
+async def _chat_stream(
+    message: str,
+    session_id: Optional[str],
+    user_id: str,
+    db: Session,
+    knowledge_base_ids: Optional[List[UUID]] = None,
+    use_rag: bool = False,
+    rag_top_k: int = 5,
+    enable_rerank: bool = True,
+    model_id: Optional[UUID] = None
+) -> AsyncGenerator[str, None]:
+    """处理无文件的聊天请求（流式响应）"""
+    event_queue = asyncio.Queue()
+    done = asyncio.Event()
+    error_occurred = None
+    final_result = None
+    
+    async def yield_event(event_type: str, event_data: Dict[str, Any]):
+        """事件回调函数"""
+        await event_queue.put((event_type, event_data))
+    
+    async def run_agent_task():
+        """在后台任务中运行agent"""
+        nonlocal error_occurred, final_result
+        try:
+            result = await run_agent_with_rag_stream(
+                input_text=message,
+                user_id=user_id,
+                session_id=session_id,
+                knowledge_base_ids=knowledge_base_ids,
+                use_rag=use_rag,
+                rag_top_k=rag_top_k,
+                enable_rerank=enable_rerank,
+                yield_event=yield_event,
+                model_id=model_id,
+                db=db
+            )
+            final_result = result
+        except Exception as e:
+            error_occurred = e
+        finally:
+            done.set()
+    
+    try:
+        # 启动agent任务
+        agent_task = asyncio.create_task(run_agent_task())
+        
+        # 流式发送事件
+        while True:
+            # 优先处理队列中的事件
+            try:
+                # 使用 get_nowait 非阻塞获取事件
+                while True:
+                    try:
+                        event_type, event_data = event_queue.get_nowait()
+                        yield _format_sse_event(event_type, event_data)
+                    except asyncio.QueueEmpty:
+                        break
+            except Exception as e:
+                logger.warning(f"处理事件队列时出错: {e}")
+            
+            # 检查任务是否完成
+            if done.is_set():
+                # 任务完成，再处理一次队列中剩余的事件
+                try:
+                    while True:
+                        try:
+                            event_type, event_data = event_queue.get_nowait()
+                            yield _format_sse_event(event_type, event_data)
+                        except asyncio.QueueEmpty:
+                            break
+                except Exception as e:
+                    logger.warning(f"处理剩余事件时出错: {e}")
+                break
+            
+            # 等待一小段时间，避免CPU占用过高
+            await asyncio.sleep(0.01)
+        
+        # 等待agent任务完成
+        await agent_task
+        
+        # 检查是否有错误
+        if error_occurred:
+            raise error_occurred
+        
+        # 发送完成事件
+        if final_result:
+            response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = final_result
+            yield _format_sse_event("agent_complete", {
+                "session_id": actual_session_id,
+                "user_id": user_id,
+                "message": message,
+                "response": response_text,
+                "sources": rag_sources,
+                "knowledge_base_ids": [str(kb_id) for kb_id in knowledge_base_ids] if knowledge_base_ids else None,
+                "activated_skills": activated_skills,
+                "skills_prompt": skills_prompt,
+                "created_at": datetime.now().isoformat()
+            })
+        
+    except Exception as e:
+        logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        yield _format_sse_event("error", {
+            "error": f"处理失败: {str(e)}"
+        })
 
 async def _chat_with_file_stream(
     file: UploadFile,
@@ -238,38 +350,97 @@ async def _chat_with_file_stream(
         except Exception as verify_e:
             logger.warning(f"⚠️ 验证查询失败（不影响主流程）: {verify_e}")
         
-        # 7. 执行对话（使用临时文件进行RAG）
-        yield _format_sse_event("chat_start", {
-            "message": "开始生成回答..."
-        })
-        
+        # 7. 执行对话（使用临时文件进行RAG，流式输出）
         # 如果提供了知识库，使用知识库进行 RAG；否则使用临时文件进行 RAG
         use_rag_final = use_rag or knowledge_base_ids is not None
         kb_ids_final = knowledge_base_ids if knowledge_base_ids else None
         
-        response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = await run_agent_with_rag(
-            input_text=message,
-            user_id=user_id,
-            session_id=session_id,
-            knowledge_base_ids=kb_ids_final,  # 如果提供了知识库，使用知识库；否则为 None（使用临时文件）
-            use_rag=use_rag_final,  # 启用RAG（使用知识库或临时文件）
-            rag_top_k=5,
-            enable_rerank=True,
-            session_id_for_temp_files=session_id if not kb_ids_final else None  # 如果没有知识库，指定使用临时文件
-        )
+        # 使用流式函数
+        event_queue = asyncio.Queue()
+        done = asyncio.Event()
+        error_occurred = None
+        final_result = None
         
-        # 8. 发送最终响应
-        yield _format_sse_event("chat_response", {
-            "session_id": actual_session_id,
-            "user_id": user_id,
-            "message": message,
-            "response": response_text,
-            "sources": rag_sources,
-            "knowledge_base_ids": [str(kb_id) for kb_id in knowledge_base_ids] if knowledge_base_ids else None,
-            "activated_skills": activated_skills,
-            "skills_prompt": skills_prompt,
-            "created_at": datetime.now().isoformat()
-        })
+        async def yield_event(event_type: str, event_data: Dict[str, Any]):
+            """事件回调函数"""
+            await event_queue.put((event_type, event_data))
+        
+        async def run_agent_task():
+            """在后台任务中运行agent"""
+            nonlocal error_occurred, final_result
+            try:
+                result = await run_agent_with_rag_stream(
+                    input_text=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    knowledge_base_ids=kb_ids_final,
+                    use_rag=use_rag_final,
+                    rag_top_k=5,
+                    enable_rerank=True,
+                    session_id_for_temp_files=session_id if not kb_ids_final else None,
+                    yield_event=yield_event
+                )
+                final_result = result
+            except Exception as e:
+                error_occurred = e
+            finally:
+                done.set()
+        
+        # 启动agent任务
+        agent_task = asyncio.create_task(run_agent_task())
+        
+        # 流式发送事件
+        while True:
+            # 优先处理队列中的事件
+            try:
+                # 使用 get_nowait 非阻塞获取事件
+                while True:
+                    try:
+                        event_type, event_data = event_queue.get_nowait()
+                        yield _format_sse_event(event_type, event_data)
+                    except asyncio.QueueEmpty:
+                        break
+            except Exception as e:
+                logger.warning(f"处理事件队列时出错: {e}")
+            
+            # 检查任务是否完成
+            if done.is_set():
+                # 任务完成，再处理一次队列中剩余的事件
+                try:
+                    while True:
+                        try:
+                            event_type, event_data = event_queue.get_nowait()
+                            yield _format_sse_event(event_type, event_data)
+                        except asyncio.QueueEmpty:
+                            break
+                except Exception as e:
+                    logger.warning(f"处理剩余事件时出错: {e}")
+                break
+            
+            # 等待一小段时间，避免CPU占用过高
+            await asyncio.sleep(0.01)
+        
+        # 等待agent任务完成
+        await agent_task
+        
+        # 检查是否有错误
+        if error_occurred:
+            raise error_occurred
+        
+        # 发送完成事件
+        if final_result:
+            response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = final_result
+            yield _format_sse_event("agent_complete", {
+                "session_id": actual_session_id,
+                "user_id": user_id,
+                "message": message,
+                "response": response_text,
+                "sources": rag_sources,
+                "knowledge_base_ids": [str(kb_id) for kb_id in knowledge_base_ids] if knowledge_base_ids else None,
+                "activated_skills": activated_skills,
+                "skills_prompt": skills_prompt,
+                "created_at": datetime.now().isoformat()
+            })
         
     except Exception as e:
         logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {str(e)}", exc_info=True)
@@ -284,19 +455,20 @@ async def _chat_with_file_stream(
             except:
                 pass
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat")
 async def chat(
     request_obj: Request,
     db: Session = Depends(get_db)
 ):
     """
-    智能对话接口（支持 JSON 和 form-data 两种格式）
+    智能对话接口（支持 JSON 格式，SSE流式响应）
     
     功能特性：
     - 自动创建 Session：如果不传 session_id，自动使用 UUID 创建新会话
     - 多知识库选择：支持选择多个知识库进行 RAG 检索
     - RAG 问答：选择知识库后自动启用 RAG 检索，从向量数据库检索相关内容
     - 会话持久化：基于 PostgreSQL 的 Session 存储（符合 ADK 官方文档规范）
+    - SSE流式输出：实时显示Skills加载、RAG检索和Agent回复
     
     参考文档：https://adk.wiki/sessions/
     """
@@ -310,57 +482,8 @@ async def chat(
             req = ChatRequest(**body)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
-    elif "multipart/form-data" in content_type:
-        # Form-data 格式
-        try:
-            form = await request_obj.form()
-            message = form.get("message")
-            if not message:
-                raise HTTPException(status_code=400, detail="Missing required field: message")
-            
-            # 检查是否有文件上传（使用 /chat/form 接口）
-            if "file" in form:
-                file_item = form["file"]
-                if file_item and hasattr(file_item, 'filename') and file_item.filename:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="File upload detected. Please use /chat/form endpoint for file uploads."
-                    )
-            
-            # 解析知识库ID
-            kb_ids = None
-            kb_ids_str = form.get("knowledge_base_ids")
-            if kb_ids_str:
-                try:
-                    kb_ids = [UUID(id.strip()) for id in str(kb_ids_str).split(",") if id.strip()]
-                except (ValueError, AttributeError):
-                    kb_ids = None
-            
-            # 解析布尔值
-            use_rag_val = form.get("use_rag", "false")
-            if isinstance(use_rag_val, str):
-                use_rag_val = use_rag_val.lower() == "true"
-            
-            enable_rerank_val = form.get("enable_rerank", "true")
-            if isinstance(enable_rerank_val, str):
-                enable_rerank_val = enable_rerank_val.lower() == "true"
-            
-            req = ChatRequest(
-                message=str(message),
-                session_id=form.get("session_id"),
-                user_id=form.get("user_id", "default_user"),
-                knowledge_base_ids=kb_ids,
-                use_rag=use_rag_val,
-                rag_top_k=int(form.get("rag_top_k", 5)),
-                enable_rerank=enable_rerank_val
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Form-data parsing error: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=400, detail=f"Invalid form-data format: {str(e)}")
     else:
-        raise HTTPException(status_code=400, detail="Unsupported Content-Type. Use application/json or multipart/form-data")
+        raise HTTPException(status_code=400, detail="Unsupported Content-Type. Use application/json")
     
     logger.info("=" * 80)
     logger.info(f"收到聊天请求: message={req.message[:100]}...")
@@ -380,8 +503,11 @@ async def chat(
         user_id = req.user_id or "default_user"
         
         # 2. 验证知识库（如果提供了）
+        # 注意：req.knowledge_base_ids 已经是 List[UUID] 类型（Pydantic已转换），不需要再次转换
+        kb_ids = None
         if req.knowledge_base_ids:
-            for kb_id in req.knowledge_base_ids:
+            kb_ids = req.knowledge_base_ids
+            for kb_id in kb_ids:
                 kb = KnowledgeBaseService.get_knowledge_base_by_id(db, kb_id)
                 if not kb:
                     logger.warning(f"知识库不存在: {kb_id}")
@@ -389,60 +515,33 @@ async def chat(
                         status_code=404,
                         detail=f"知识库不存在: {kb_id}"
                     )
-            logger.info(f"✓ 知识库验证通过: {len(req.knowledge_base_ids)} 个知识库")
+            logger.info(f"✓ 知识库验证通过: {len(kb_ids)} 个知识库")
         
-        # 3. 调用智能体（支持 RAG）
-        logger.info("开始调用智能体...")
-        response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = await run_agent_with_rag(
-            input_text=req.message,
-            user_id=user_id,
-            session_id=session_id,
-            knowledge_base_ids=req.knowledge_base_ids,
-            use_rag=req.use_rag,
-            rag_top_k=req.rag_top_k,
-            enable_rerank=req.enable_rerank
+        # 3. 使用流式响应
+        return StreamingResponse(
+            _chat_stream(
+                message=req.message,
+                session_id=session_id,
+                user_id=user_id,
+                db=db,
+                knowledge_base_ids=kb_ids,
+                use_rag=req.use_rag,
+                rag_top_k=req.rag_top_k,
+                enable_rerank=req.enable_rerank,
+                model_id=req.model_id
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
-        
-        logger.info(f"✓ 智能体响应成功: length={len(response_text)}")
-        if rag_sources:
-            logger.info(f"✓ RAG 来源: {len(rag_sources)} 个片段")
-        
-        # 转换技能信息格式
-        skill_info_list = None
-        if activated_skills:
-            skill_info_list = [
-                SkillInfo(
-                    name=skill.get("name", ""),
-                    description=skill.get("description", ""),
-                    version=skill.get("version")
-                )
-                for skill in activated_skills
-            ]
-        
-        # 4. 构建响应
-        response = ChatResponse(
-            session_id=actual_session_id,
-            user_id=user_id,
-            message=req.message,
-            response=response_text,
-            sources=rag_sources,
-            knowledge_base_ids=[str(kb_id) for kb_id in req.knowledge_base_ids] if req.knowledge_base_ids else None,
-            activated_skills=skill_info_list,
-            skills_prompt=skills_prompt,
-            created_at=datetime.now()
-        )
-        
-        logger.info("=" * 80)
-        logger.info("✅ 聊天请求处理完成")
-        logger.info("=" * 80)
-        
-        return response
         
     except HTTPException:
         raise
     except Exception as e:
         error_msg = str(e)
-        # 确保错误消息是 UTF-8 编码的字符串
         try:
             if isinstance(error_msg, bytes):
                 error_msg = error_msg.decode('utf-8', errors='replace')
@@ -791,6 +890,23 @@ async def get_skills_statistics():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/skills/reload")
+async def reload_skills():
+    """
+    重新加载所有技能（用于修复编码问题或更新技能）
+    """
+    try:
+        skills_manager.reload_skills()
+        skills = skills_manager.list_all_skills()
+        return {
+            "message": "Skills reloaded successfully",
+            "count": len(skills),
+            "skills": [s["name"] for s in skills]
+        }
+    except Exception as e:
+        logger.error(f"重新加载技能失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"重新加载技能失败: {str(e)}")
+
 # ===== 知识库管理 API =====
 
 @router.post("/knowledge-bases", response_model=KnowledgeBaseResponse, status_code=201)
@@ -1001,6 +1117,57 @@ async def get_current_model_info(db: Session = Depends(get_db)):
     """获取当前使用的模型信息（用户配置或默认）"""
     model_info = ModelConfigurationService.get_current_model_info(db)
     return model_info
+
+@router.post("/model-configurations/sync-from-config")
+async def sync_models_from_config(db: Session = Depends(get_db)):
+    """从配置文件同步模型到数据库（作为备份）"""
+    from core.config import settings
+    
+    # 从配置文件创建默认模型配置
+    default_config = {
+        "name": "default_qwen",
+        "model_name": settings.DEFAULT_LLM_MODEL,
+        "api_key": settings.QWEN_API_KEY,
+        "base_url": settings.QWEN_BASE_URL,
+        "provider": "openai",
+        "description": "从配置文件同步的默认模型配置",
+        "is_active": False,  # 默认不激活，避免覆盖用户设置
+        "temperature": 0.7,
+        "max_tokens": None,
+        "top_p": None,
+        "frequency_penalty": None,
+        "presence_penalty": None
+    }
+    
+    # 检查是否已存在同名配置
+    existing = ModelConfigurationDAO.get_by_name(db, default_config["name"])
+    if existing:
+        # 更新现有配置（但不改变is_active状态）
+        existing.model_name = default_config["model_name"]
+        existing.api_key = default_config["api_key"]
+        existing.base_url = default_config["base_url"]
+        existing.provider = default_config["provider"]
+        existing.description = default_config["description"]
+        existing.temperature = default_config["temperature"]
+        existing.max_tokens = default_config["max_tokens"]
+        existing.top_p = default_config["top_p"]
+        existing.frequency_penalty = default_config["frequency_penalty"]
+        existing.presence_penalty = default_config["presence_penalty"]
+        db.commit()
+        db.refresh(existing)
+        return {
+            "message": "模型配置已更新",
+            "model": ModelConfigurationResponse.model_validate(existing)
+        }
+    else:
+        # 创建新配置
+        from models.schemas import ModelConfigurationCreate
+        config_create = ModelConfigurationCreate(**default_config)
+        db_model = ModelConfigurationService.create_model_configuration(db, config_create)
+        return {
+            "message": "模型配置已创建",
+            "model": ModelConfigurationResponse.model_validate(db_model)
+        }
 
 # ===== RAG 查询 API =====
 
@@ -1589,6 +1756,150 @@ async def get_chat_messages(
         raise
     except Exception as e:
         logger.error(f"获取Chat消息列表失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===== 一键总结为方案 API =====
+
+@router.post("/chat/sessions/{session_id}/generate-summary")
+async def generate_summary_plan(
+    session_id: str,
+    top_k: int = Query(20, ge=1, le=100, description="选择前 K 条重要消息用于总结"),
+    max_messages: Optional[int] = Query(None, ge=1, description="最大消息数限制（None 表示不限制）"),
+    db: Session = Depends(get_db)
+):
+    """
+    一键总结为方案：从当前会话读取对话历史，生成 MD 方案并上传到 OSS
+    
+    Args:
+        session_id: 会话ID
+        top_k: 选择前 K 条重要消息用于总结
+        max_messages: 最大消息数限制
+    
+    Returns:
+        Dict[str, Any]: {
+            "success": bool,
+            "object_name": str,  # MinIO 对象名称
+            "download_url": str,  # 下载链接
+            "plan_content": str,  # 方案内容预览
+            "messages_used": int,  # 使用的消息数量
+            "total_messages": int,  # 总消息数量
+            "error": str  # 错误信息（如果失败）
+        }
+    """
+    try:
+        # 验证会话是否存在
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        # 导入总结智能体
+        from agents.summary_agent import generate_summary_plan
+        
+        # 调用总结智能体生成方案
+        result = await generate_summary_plan(
+            session_id=session_id,
+            top_k=top_k,
+            max_messages=max_messages
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "生成方案失败")
+            )
+        
+        return {
+            "success": True,
+            "data": {
+                "object_name": result.get("object_name"),
+                "download_url": result.get("download_url"),
+                "plan_content": result.get("plan_content", ""),
+                "messages_used": result.get("messages_used", 0),
+                "total_messages": result.get("total_messages", 0)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"生成方案总结失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+from enum import Enum
+
+class AgentType(str, Enum):
+    PAPER = "paper"  # 原有的论文智能体
+    EDUCATION = "education"  # 教育领域智能体
+    RESEARCH_MANAGEMENT = "research_management"  # 科研管理智能体
+    INDUSTRY_APPLICATION = "industry_application"  # 产业应用智能体
+    ACADEMIC_PUBLISHING = "academic_publishing"  # 学术出版智能体
+
+@router.post("/agents/{agent_type}/chat")
+async def chat_with_agent(
+    agent_type: AgentType,
+    request_obj: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    使用指定智能体进行对话
+
+    Args:
+        agent_type: 智能体类型
+        request_obj: 请求数据
+        db: 数据库会话
+    """
+    content_type = request_obj.headers.get("content-type", "")
+
+    # 解析请求参数
+    if "application/json" in content_type:
+        try:
+            body = await request_obj.json()
+            req = ChatRequest(**body)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported Content-Type. Use application/json")
+
+    logger.info(f"收到{agent_type.value}智能体聊天请求: message={req.message[:100]}...")
+
+    try:
+        # 根据智能体类型创建相应的Agent
+        if agent_type == AgentType.EDUCATION:
+            agent = await create_education_agent()
+        elif agent_type == AgentType.RESEARCH_MANAGEMENT:
+            agent = await create_research_management_agent()
+        elif agent_type == AgentType.INDUSTRY_APPLICATION:
+            agent = await create_industry_application_agent()
+        elif agent_type == AgentType.ACADEMIC_PUBLISHING:
+            agent = await create_academic_publishing_agent()
+        else:
+            # 默认使用论文智能体
+            agent = await create_agent_with_skills()
+
+        # TODO: 实现不同智能体的对话逻辑
+        # 这里需要根据不同智能体的特点调整对话处理方式
+        response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = await run_agent_with_rag(
+            input_text=req.message,
+            user_id=req.user_id or "default_user",
+            session_id=req.session_id,
+            knowledge_base_ids=req.knowledge_base_ids,
+            use_rag=req.use_rag if hasattr(req, 'use_rag') else False,
+            rag_top_k=5,
+            enable_rerank=True
+        )
+
+        return ChatResponse(
+            response=response_text,
+            session_id=actual_session_id,
+            rag_sources=rag_sources,
+            activated_skills=activated_skills
+        )
+
+    except Exception as e:
+        logger.error(f"{agent_type.value}智能体对话失败: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/chat/sessions/{session_id}/history", response_model=List[ChatHistoryDetailResponse])

@@ -3,7 +3,8 @@ from sqlalchemy import select
 from core.db import SessionLocal
 from models.sql import DocumentChunk
 import litellm
-from typing import List
+from typing import List, Dict, Any
+import json
 
 def scholar_search(query: str, limit: int = 5) -> str:
     """

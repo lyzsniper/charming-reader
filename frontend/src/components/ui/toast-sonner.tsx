@@ -9,15 +9,19 @@ export function Toaster() {
     <SonnerToaster
       position="top-right"
       expand={true}
-      richColors={true}
+      richColors={false}
       closeButton={true}
       duration={3000}
       toastOptions={{
         classNames: {
-          success: 'bg-green-50 border-green-200 text-green-900',
-          error: 'bg-red-50 border-red-200 text-red-900',
-          info: 'bg-blue-50 border-blue-200 text-blue-900',
-          warning: 'bg-yellow-50 border-yellow-200 text-yellow-900',
+          toast: 'group toast group-[.toaster]:bg-white group-[.toaster]:text-gray-950 group-[.toaster]:border group-[.toaster]:shadow-lg group-[.toaster]:rounded-xl group-[.toaster]:p-4',
+          description: 'group-[.toast]:text-gray-600',
+          actionButton: 'group-[.toast]:bg-gray-900 group-[.toast]:text-gray-50',
+          cancelButton: 'group-[.toast]:bg-gray-100 group-[.toast]:text-gray-500',
+          success: 'group-[.toaster]:bg-gradient-to-r group-[.toaster]:from-green-50 group-[.toaster]:to-emerald-50 group-[.toaster]:border-green-200 group-[.toaster]:shadow-green-100/50',
+          error: 'group-[.toaster]:bg-gradient-to-r group-[.toaster]:from-red-50 group-[.toaster]:to-rose-50 group-[.toaster]:border-red-200 group-[.toaster]:shadow-red-100/50',
+          info: 'group-[.toaster]:bg-gradient-to-r group-[.toaster]:from-blue-50 group-[.toaster]:to-cyan-50 group-[.toaster]:border-blue-200 group-[.toaster]:shadow-blue-100/50',
+          warning: 'group-[.toaster]:bg-gradient-to-r group-[.toaster]:from-yellow-50 group-[.toaster]:to-amber-50 group-[.toaster]:border-yellow-200 group-[.toaster]:shadow-yellow-100/50',
         },
       }}
     />

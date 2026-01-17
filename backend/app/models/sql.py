@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Table, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Table, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
@@ -87,8 +87,17 @@ class ModelConfiguration(Base):
     model_name = Column(String, nullable=False)  # 模型名称，如 gpt-4, qwen-flash 等
     api_key = Column(String, nullable=True)  # API Key
     base_url = Column(String, nullable=True)  # 基础 URL
+    provider = Column(String, nullable=True)  # 提供商，如 openai, qwen, deepseek 等
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=False)  # 是否为当前激活的模型
+    
+    # 模型参数（作为单独的列存储）
+    temperature = Column(Float, nullable=True)  # 温度参数，默认0.7
+    max_tokens = Column(Integer, nullable=True)  # 最大token数
+    top_p = Column(Float, nullable=True)  # top_p参数
+    frequency_penalty = Column(Float, nullable=True)  # 频率惩罚
+    presence_penalty = Column(Float, nullable=True)  # 存在惩罚
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

@@ -1,0 +1,179 @@
+{
+  "timestamp": "2026-01-17T16:02:32Z",
+  "root_claude_md": "CLAUDE.md",
+  "modules": [
+    {
+      "path": "backend",
+      "type": "backend",
+      "claude_md": "backend/CLAUDE.md",
+      "entry_point": "backend/app/main.py",
+      "description": "FastAPI后端API服务",
+      "submodules": [
+        {
+          "path": "backend/app/agents/paper_agent",
+          "claude_md": "backend/app/agents/paper_agent/CLAUDE.md",
+          "entry_point": "backend/app/agents/paper_agent/agent.py",
+          "description": "论文智能体核心逻辑"
+        },
+        {
+          "path": "backend/app/rag",
+          "claude_md": "backend/app/rag/CLAUDE.md",
+          "entry_point": "backend/app/rag/engine.py",
+          "description": "检索增强生成引擎"
+        },
+        {
+          "path": "backend/app/skills",
+          "claude_md": "backend/app/skills/CLAUDE.md",
+          "entry_point": "backend/app/skills/manager.py",
+          "description": "技能管理系统"
+        }
+      ]
+    },
+    {
+      "path": "frontend",
+      "type": "frontend",
+      "claude_md": "frontend/CLAUDE.md",
+      "entry_point": "frontend/src/main.tsx",
+      "description": "React TypeScript前端界面"
+    },
+    {
+      "path": ".claude/skills",
+      "type": "skills",
+      "claude_md": ".claude/skills/CLAUDE.md",
+      "description": "Claude技能系统",
+      "submodules": [
+        {
+          "path": ".claude/skills/paper-analysis",
+          "claude_md": ".claude/skills/paper-analysis/CLAUDE.md",
+          "entry_point": ".claude/skills/paper-analysis/SKILL.md",
+          "description": "深度论文分析技能"
+        },
+        {
+          "path": ".claude/skills/literature-review",
+          "claude_md": ".claude/skills/literature-review/CLAUDE.md",
+          "entry_point": ".claude/skills/literature-review/SKILL.md",
+          "description": "文献综述生成技能"
+        },
+        {
+          "path": ".claude/skills/citation-management",
+          "claude_md": ".claude/skills/citation-management/CLAUDE.md",
+          "entry_point": ".claude/skills/citation-management/SKILL.md",
+          "description": "引文管理技能"
+        }
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "name": "paper-analysis",
+      "path": ".claude/skills/paper-analysis",
+      "description": "深度分析学术论文的结构、方法论、结果和贡献",
+      "triggers": ["analyze paper", "paper analysis", "分析论文", "论文分析"],
+      "version": "1.0.0"
+    },
+    {
+      "name": "literature-review",
+      "path": ".claude/skills/literature-review",
+      "description": "生成系统性的文献综述，包括研究脉络、方法论比较",
+      "triggers": ["literature review", "文献综述", "systematic review"],
+      "version": "1.0.0"
+    },
+    {
+      "name": "citation-management",
+      "path": ".claude/skills/citation-management",
+      "description": "自动识别、提取和格式化学术文献引用",
+      "triggers": ["citation management", "引文管理", "apa format"],
+      "version": "1.0.0"
+    },
+    {
+      "name": "data-extraction",
+      "path": ".claude/skills/data-extraction",
+      "description": "从论文中提取表格、图表等结构化数据",
+      "triggers": ["data extraction", "数据提取", "extract table"],
+      "version": "1.0.0"
+    },
+    {
+      "name": "rag-enhancement",
+      "path": ".claude/skills/rag-enhancement",
+      "description": "优化检索增强生成策略和效果",
+      "triggers": ["rag enhancement", "检索增强", "optimize retrieval"],
+      "version": "1.0.0"
+    },
+    {
+      "name": "github-integration",
+      "path": ".claude/skills/github-integration",
+      "description": "集成GitHub进行代码和文献管理",
+      "triggers": ["github integration", "GitHub集成", "code management"],
+      "version": "1.0.0"
+    }
+  ],
+  "coverage": {
+    "total_files": 150,
+    "scanned_files": 80,
+    "coverage_percentage": 53.3,
+    "modules_scanned": 3,
+    "modules_total": 3,
+    "skills_scanned": 6,
+    "skills_total": 6,
+    "claude_md_files_created": 10
+  },
+  "gaps": [
+    {
+      "module": "backend/app/rag/strategies",
+      "description": "RAG策略实现细节未完全扫描",
+      "files": [
+        "adaptive_rag.py",
+        "agentic_rag.py",
+        "corrective_rag.py",
+        "hybrid_rag.py",
+        "self_reflective_rag.py",
+        "two_step_rag.py"
+      ]
+    },
+    {
+      "module": "backend/app/rag/chunkers",
+      "description": "文档分块策略实现未详细扫描",
+      "files": [
+        "base.py",
+        "custom_chunkers.py",
+        "llamaindex_chunkers.py"
+      ]
+    },
+    {
+      "module": "frontend/src/components/workspace",
+      "description": "工作区组件实现未完全扫描",
+      "files": [
+        "ChatPanel.tsx",
+        "ContextPanel.tsx",
+        "ThinkingProcess.tsx",
+        "WorkspaceView.tsx"
+      ]
+    },
+    {
+      "module": "backend/app/services",
+      "description": "业务服务层实现未详细扫描",
+      "files": [
+        "ingestion.py",
+        "rag_service.py",
+        "vectorization_service.py",
+        "storage_service.py"
+      ]
+    }
+  ],
+  "ignored_patterns": [
+    "node_modules/**",
+    "venv/**",
+    "__pycache__/**",
+    "*.pyc",
+    "dist/**",
+    "build/**",
+    ".git/**"
+  ],
+  "truncated": false,
+  "next_recommendations": [
+    "优先扫描 backend/app/rag/strategies/ - RAG策略实现",
+    "扫描 backend/app/rag/chunkers/ - 文档分块策略",
+    "扫描 frontend/src/components/workspace/ - 工作区组件",
+    "扫描 backend/app/services/ - 业务服务实现"
+  ]
+}

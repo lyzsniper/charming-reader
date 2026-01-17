@@ -1,11 +1,110 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { Components } from 'react-markdown';
+import { motion } from 'framer-motion';
+import { Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { showSuccess } from '@/utils/dialogs';
+import 'katex/dist/katex.min.css';
+
+// 代码块组件（带复制功能）
+const CodeBlock: React.FC<{ language: string; codeString: string }> = ({ language, codeString }) => {
+  const [copied, setCopied] = useState(false);
+  
+  return (
+    <div className="my-4 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 shadow-lg hover:shadow-xl transition-shadow group/codeblock">
+      <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-900 border-b border-gray-200 dark:border-gray-700">
+        <span className="text-xs font-mono font-semibold text-gray-700 dark:text-gray-300">{language}</span>
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1.5">
+            <div className="w-2.5 h-2.5 rounded-full bg-red-400"></div>
+            <div className="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
+            <div className="w-2.5 h-2.5 rounded-full bg-green-400"></div>
+          </div>
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(codeString);
+                setCopied(true);
+                showSuccess('代码已复制');
+                setTimeout(() => setCopied(false), 2000);
+              } catch (err) {
+                console.error('复制失败', err);
+              }
+            }}
+            className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors opacity-0 group-hover/codeblock:opacity-100"
+            aria-label="复制代码"
+          >
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-green-600" />
+            ) : (
+              <Copy className="w-3.5 h-3.5 text-gray-600 dark:text-gray-400" />
+            )}
+          </motion.button>
+        </div>
+      </div>
+      <SyntaxHighlighter
+        style={oneDark}
+        language={language}
+        PreTag="div"
+        className="!m-0 !rounded-none"
+        customStyle={{
+          margin: 0,
+          padding: '1rem',
+          background: '#282c34',
+          fontSize: '0.875rem',
+          lineHeight: '1.6',
+        }}
+      >
+        {codeString}
+      </SyntaxHighlighter>
+    </div>
+  );
+};
+
+// 图片组件（带懒加载）
+const LazyImage: React.FC<{ src?: string; alt?: string }> = ({ src, alt }) => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
+  
+  return (
+    <div className="relative my-4">
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 dark:bg-gray-800 rounded-lg">
+          <div className="w-8 h-8 border-2 border-gray-300 dark:border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+        </div>
+      )}
+      {hasError ? (
+        <div className="flex items-center justify-center p-8 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+          <span className="text-sm text-gray-500 dark:text-gray-400">图片加载失败</span>
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          onLoad={() => setIsLoading(false)}
+          onError={() => {
+            setIsLoading(false);
+            setHasError(true);
+          }}
+          className={cn(
+            "max-w-full h-auto rounded-lg shadow-md border border-gray-200 dark:border-gray-700 transition-opacity duration-300",
+            isLoading ? "opacity-0" : "opacity-100"
+          )}
+        />
+      )}
+    </div>
+  );
+};
 
 interface MarkdownRendererProps {
   content: string;
@@ -23,7 +122,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   return (
     <div className={cn("markdown-content", className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           // 标题样式
           h1: ({ ...props }) => (
@@ -66,21 +166,21 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             // 处理引用链接
             if (href?.startsWith('#citation-')) {
               const id = href.split('-')[1];
-              return (
-                <button
-                  className="inline-flex items-center justify-center min-w-[1.2em] h-[1.2em] mx-0.5 text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:scale-110 transition-all align-text-top cursor-pointer"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (onCitationClick) {
-                      onCitationClick(id);
-                    } else if (citationEventName) {
-                      window.dispatchEvent(new CustomEvent(citationEventName, { detail: { id } }));
-                    }
-                  }}
-                >
-                  {id}
-                </button>
-              );
+            return (
+              <button
+                className="inline-flex items-center justify-center min-w-[1.2em] h-[1.2em] mx-0.5 text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-900/50 border border-blue-200 dark:border-blue-700 rounded shadow-sm hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:scale-110 hover:shadow-md transition-all align-text-top cursor-pointer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (onCitationClick) {
+                    onCitationClick(id);
+                  } else if (citationEventName) {
+                    window.dispatchEvent(new CustomEvent(citationEventName, { detail: { id } }));
+                  }
+                }}
+              >
+                {id}
+              </button>
+            );
             }
             return (
               <a
@@ -99,34 +199,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             const codeString = String(children).replace(/\n$/, '');
             
             if (!inline && match) {
-              return (
-                <div className="my-4 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm">
-                  <div className="flex items-center justify-between px-4 py-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                    <span className="text-xs font-mono text-gray-600 dark:text-gray-400">{match[1]}</span>
-                  </div>
-                  <SyntaxHighlighter
-                    style={oneDark}
-                    language={match[1]}
-                    PreTag="div"
-                    className="!m-0 !rounded-none"
-                    customStyle={{
-                      margin: 0,
-                      padding: '1rem',
-                      background: '#282c34',
-                      fontSize: '0.875rem',
-                      lineHeight: '1.5',
-                    }}
-                    {...props}
-                  >
-                    {codeString}
-                  </SyntaxHighlighter>
-                </div>
-              );
+              return <CodeBlock language={match[1]} codeString={codeString} />;
             }
             
             return (
               <code
-                className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded text-sm font-mono border border-gray-200 dark:border-gray-700"
+                className="px-1.5 py-0.5 bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 text-gray-800 dark:text-gray-200 rounded text-sm font-mono border border-gray-200 dark:border-gray-700 shadow-sm"
                 {...props}
               >
                 {children}
@@ -137,14 +215,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
           // 引用样式
           blockquote: ({ ...props }) => (
             <blockquote
-              className="border-l-4 border-blue-500 dark:border-blue-400 pl-4 py-2 my-4 bg-blue-50 dark:bg-blue-900/20 text-gray-700 dark:text-gray-300 italic rounded-r"
+              className="border-l-4 border-blue-500 dark:border-blue-400 pl-4 py-3 my-4 bg-gradient-to-r from-blue-50 to-blue-100/50 dark:from-blue-900/20 dark:to-blue-900/10 text-gray-700 dark:text-gray-300 italic rounded-r shadow-sm"
               {...props}
             />
           ),
           
           // 表格样式
           table: ({ ...props }) => (
-            <div className="my-4 overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
+            <div className="my-4 overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700 shadow-md hover:shadow-lg transition-shadow">
               <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700" {...props} />
             </div>
           ),
@@ -177,12 +255,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             <em className="italic text-gray-800 dark:text-gray-200" {...props} />
           ),
           
-          // 图片样式
-          img: ({ ...props }) => (
-            <img
-              className="max-w-full h-auto rounded-lg my-4 shadow-md border border-gray-200 dark:border-gray-700"
-              {...props}
-            />
+          // 图片样式 - 添加懒加载
+          img: ({ src, alt, ...props }: any) => (
+            <LazyImage src={src} alt={alt} />
           ),
         }}
       >

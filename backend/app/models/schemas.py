@@ -82,16 +82,30 @@ class ModelConfigurationCreate(BaseModel):
     model_name: str = Field(..., min_length=1, max_length=200)
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    provider: Optional[str] = None  # 提供商，如 openai, qwen, deepseek 等
     description: Optional[str] = None
     is_active: bool = False
+    # 模型参数
+    temperature: Optional[float] = Field(None, ge=0, le=2)
+    max_tokens: Optional[int] = Field(None, gt=0)
+    top_p: Optional[float] = Field(None, ge=0, le=1)
+    frequency_penalty: Optional[float] = Field(None, ge=-2, le=2)
+    presence_penalty: Optional[float] = Field(None, ge=-2, le=2)
 
 class ModelConfigurationUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     model_name: Optional[str] = Field(None, min_length=1, max_length=200)
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    provider: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    # 模型参数
+    temperature: Optional[float] = Field(None, ge=0, le=2)
+    max_tokens: Optional[int] = Field(None, gt=0)
+    top_p: Optional[float] = Field(None, ge=0, le=1)
+    frequency_penalty: Optional[float] = Field(None, ge=-2, le=2)
+    presence_penalty: Optional[float] = Field(None, ge=-2, le=2)
 
 class ModelConfigurationResponse(BaseModel):
     id: UUID
@@ -99,8 +113,15 @@ class ModelConfigurationResponse(BaseModel):
     model_name: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    provider: Optional[str] = None
     description: Optional[str] = None
     is_active: bool
+    # 模型参数
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
     created_at: datetime
     updated_at: datetime
     
@@ -121,6 +142,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="用户消息")
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动创建新会话")
     user_id: Optional[str] = Field("default_user", description="用户ID")
+    model_id: Optional[UUID] = Field(None, description="模型配置ID，不传则使用当前激活的模型")
     knowledge_base_ids: Optional[List[UUID]] = Field(None, description="知识库ID列表，选择后启用RAG检索")
     use_rag: bool = Field(False, description="是否启用RAG问答（有知识库时自动为True）")
     rag_top_k: int = Field(5, ge=1, le=20, description="RAG检索数量")
