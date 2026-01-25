@@ -168,6 +168,7 @@ class ChatSession(Base):
     # 与消息和历史记录的关系
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
     histories = relationship("ChatHistory", back_populates="session", cascade="all, delete-orphan", order_by="ChatHistory.turn_index")
+    attachments = relationship("ChatAttachment", back_populates="session", cascade="all, delete-orphan", order_by="ChatAttachment.created_at.desc()")
 
 # ChatMessage 表：存储对话的具体消息
 class ChatMessage(Base):
@@ -215,4 +216,26 @@ class ChatHistory(Base):
     __table_args__ = (
         # UniqueConstraint('session_id', 'turn_index', name='uix_chat_history_session_turn'),
     )
+
+# ChatAttachment 表：存储对话附件（上传的文件、生成的文件等）
+class ChatAttachment(Base):
+    __tablename__ = "chat_attachments"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)  # 所属会话
+    message_id = Column(UUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)  # 关联的消息ID（可选）
+    attachment_type = Column(String, nullable=False)  # 附件类型：'upload'（上传的文件）、'generated'（生成的文件）、'summary'（总结文档）等
+    file_name = Column(String, nullable=False)  # 文件名
+    file_type = Column(String, nullable=False)  # 文件类型（MIME type或扩展名，如 'application/pdf', 'text/markdown', 'markdown'）
+    file_size = Column(Integer, nullable=True)  # 文件大小（字节）
+    storage_object_name = Column(String, nullable=True)  # 存储对象名称（MinIO中的对象名）
+    download_url = Column(String, nullable=True)  # 下载链接（预签名URL或公共URL）
+    preview_url = Column(String, nullable=True)  # 预览链接（如果有）
+    description = Column(Text, nullable=True)  # 附件描述
+    attachment_metadata = Column(JSON, nullable=True)  # 额外元数据（如文件内容预览、生成参数等）
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # 与 Session 和 Message 的关系
+    session = relationship("ChatSession", back_populates="attachments")
+    message = relationship("ChatMessage", backref="attachments")
 

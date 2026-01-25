@@ -147,6 +147,7 @@ class ChatRequest(BaseModel):
     use_rag: bool = Field(False, description="是否启用RAG问答（有知识库时自动为True）")
     rag_top_k: int = Field(5, ge=1, le=20, description="RAG检索数量")
     enable_rerank: bool = Field(True, description="是否启用检索重排序")
+    use_multi_agent: bool = Field(False, description="是否启用多智能体协作模式（协调智能体）")
 
 class SkillInfo(BaseModel):
     """技能信息"""
@@ -249,10 +250,46 @@ class ChatHistoryResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# ===== Chat Attachment 相关 Schemas =====
+
+class ChatAttachmentCreate(BaseModel):
+    """创建对话附件"""
+    session_id: str = Field(..., description="会话ID（String类型）")
+    message_id: Optional[UUID] = Field(None, description="关联的消息ID")
+    attachment_type: str = Field(..., description="附件类型：'upload'、'generated'、'summary' 等")
+    file_name: str = Field(..., description="文件名")
+    file_type: str = Field(..., description="文件类型（MIME type或扩展名）")
+    file_size: Optional[int] = Field(None, description="文件大小（字节）")
+    storage_object_name: Optional[str] = Field(None, description="存储对象名称")
+    download_url: Optional[str] = Field(None, description="下载链接")
+    preview_url: Optional[str] = Field(None, description="预览链接")
+    description: Optional[str] = Field(None, description="附件描述")
+    attachment_metadata: Optional[Dict] = Field(None, description="额外元数据")
+
+class ChatAttachmentResponse(BaseModel):
+    """对话附件响应"""
+    id: UUID
+    session_id: UUID
+    message_id: Optional[UUID]
+    attachment_type: str
+    file_name: str
+    file_type: str
+    file_size: Optional[int]
+    storage_object_name: Optional[str]
+    download_url: Optional[str]
+    preview_url: Optional[str]
+    description: Optional[str]
+    attachment_metadata: Optional[Dict]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 class ChatHistoryDetailResponse(ChatHistoryResponse):
-    """对话历史记录详情响应（包含关联的消息对象）"""
+    """对话历史记录详情响应（包含关联的消息对象和附件）"""
     user_message: Optional[ChatMessageResponse] = None
     assistant_message: Optional[ChatMessageResponse] = None
+    attachments: Optional[List[ChatAttachmentResponse]] = None  # 该轮次相关的附件
 
 # ===== 翻译相关 Schemas =====
 

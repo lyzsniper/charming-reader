@@ -7,6 +7,7 @@ from typing import BinaryIO, Optional
 import uuid
 from io import BytesIO
 from datetime import timedelta
+from urllib.parse import urlparse, urlunparse
 
 from core.config import settings
 from core.logger import LoggerFactory
@@ -97,7 +98,7 @@ class MinioStorageService:
             expires: 链接有效期，默认 7 天
             
         Returns:
-            str: 预签名 URL
+            str: 预签名 URL（如果配置了MINIO_PUBLIC_ENDPOINT，会替换为公网地址）
         """
         try:
             url = self.client.get_presigned_url(
@@ -106,6 +107,33 @@ class MinioStorageService:
                 object_name,
                 expires=expires
             )
+            
+            # 如果配置了公网访问地址，替换URL中的主机部分
+            if settings.MINIO_PUBLIC_ENDPOINT:
+                parsed_url = urlparse(url)
+                # 替换主机和端口
+                public_endpoint = settings.MINIO_PUBLIC_ENDPOINT
+                if ':' in public_endpoint:
+                    host, port = public_endpoint.split(':', 1)
+                else:
+                    host = public_endpoint
+                    port = parsed_url.port
+                
+                # 保持协议（http/https）
+                scheme = 'https' if settings.MINIO_SECURE else 'http'
+                new_netloc = f"{host}:{port}" if port else host
+                
+                # 重新构建URL
+                url = urlunparse((
+                    scheme,
+                    new_netloc,
+                    parsed_url.path,
+                    parsed_url.params,
+                    parsed_url.query,
+                    parsed_url.fragment
+                ))
+                logger.debug(f"替换MinIO URL主机: {parsed_url.netloc} -> {new_netloc}")
+            
             return url
         except S3Error as e:
             logger.error(f"✗ 生成预签名链接失败: {e}")

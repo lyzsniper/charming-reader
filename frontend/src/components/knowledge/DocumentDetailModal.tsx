@@ -60,8 +60,29 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({ docId,
     }
   };
 
-  const handleDownload = () => {
-    if (doc?.file_download_url) {
+  const handleDownload = async () => {
+    if (!doc?.file_download_url) return;
+    
+    try {
+      // 使用 fetch 获取文件内容，确保强制下载
+      const response = await fetch(doc.file_download_url);
+      if (!response.ok) {
+        throw new Error('下载失败');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // 从文件名或URL中提取文件扩展名
+      const fileName = doc.filename || doc.file_download_url.split('/').pop()?.split('?')[0] || 'download';
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('下载文件失败:', error);
+      // 如果 fetch 失败，回退到直接打开链接
       window.open(doc.file_download_url, '_blank');
     }
   };

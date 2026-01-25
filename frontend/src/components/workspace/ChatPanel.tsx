@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, StopCircle, Info, RotateCw, FileText, Download, Loader2, X } from 'lucide-react';
+import { Send, Paperclip, StopCircle, Info, RotateCw, FileText, Download, Loader2, X, Users, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -7,6 +7,7 @@ import { ThinkingProcess } from './ThinkingProcess';
 import { api } from '@/services/api';
 import type { ChatResponse } from '@/services/api';
 import { KnowledgeBaseSelector } from '@/components/common/KnowledgeBaseSelector';
+import { ModelSelector } from '@/components/common/ModelSelector';
 import { MarkdownRenderer } from '@/components/common/MarkdownRenderer';
 import { useKeyboardShortcuts, COMMON_SHORTCUTS } from '@/hooks/useKeyboardShortcuts';
 import { Copy, Check } from 'lucide-react';
@@ -51,10 +52,14 @@ interface ChatPanelProps {
   uploadState?: 'idle' | 'uploading' | 'success' | 'error';
   uploadError?: string | null;
   initialSessionId?: string | null;
+  initialModelId?: string | null;
+  initialUseMultiAgent?: boolean;
   initialHistory?: Array<{ role: 'user' | 'agent' | 'model'; text: string; created_at?: string | null; sources?: any[] }>;
   initialFile?: File | null;
   onSessionIdChange?: (sessionId: string | null) => void;
   onSourceClick?: (sources: any[]) => void; // 新增：RAG source 点击回调
+  onToolCallClick?: (toolCalls: ToolCall[]) => void; // 新增：工具调用点击回调
+  onPreviewClick?: (data: { content: string; fileType: string; fileName: string; downloadUrl?: string }) => void; // 新增：预览点击回调
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -64,34 +69,47 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   uploadState = 'idle',
   uploadError,
   initialSessionId,
+  initialModelId,
+  initialUseMultiAgent = false,
   initialHistory,
   initialFile,
   onSessionIdChange,
   onSourceClick,
-}) => {
+  onToolCallClick,
+                  onPreviewClick,
+                }) => {
+  // 当生成总结成功后，通知父组件刷新附件列表
+  const notifyAttachmentUpdate = () => {
+    // 触发自定义事件，通知WorkspaceView刷新附件列表
+    window.dispatchEvent(new CustomEvent('attachment-updated'));
+  };
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [localKnowledgeBaseIds, setLocalKnowledgeBaseIds] = useState<string[]>(knowledgeBaseIds || []);
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(initialModelId ?? null);
+  const [useMultiAgent, setUseMultiAgent] = useState<boolean>(initialUseMultiAgent); // 多智能体模式开关
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [messageMenuOpen, setMessageMenuOpen] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null); // 跟踪已复制的消息
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
-  const [summaryResult, setSummaryResult] = useState<{
-    download_url: string;
-    plan_content: string;
-    messages_used: number;
-    total_messages: number;
-  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasSentInitialRef = useRef(false); // 使用ref来跟踪，避免重复发送
+  const abortControllerRef = useRef<AbortController | null>(null); // 当前请求的中断控制器
+  const abortFnRef = useRef<(() => Promise<void>) | null>(null); // 当前请求的中断函数
+  const lastInitialFileRef = useRef<File | null>(null); // 跟踪上一次的 initialFile，避免文件对象引用变化时重复触发
+  const lastConversationKeyRef = useRef<number | undefined>(conversationKey); // 跟踪上一次的 conversationKey
 
   // 当 conversationKey 变化时，重置 hasSentInitialRef
   useEffect(() => {
-    hasSentInitialRef.current = false;
+    // 只在 conversationKey 真正变化时重置
+    if (lastConversationKeyRef.current !== conversationKey) {
+      hasSentInitialRef.current = false;
+      lastConversationKeyRef.current = conversationKey;
+      lastInitialFileRef.current = null; // 重置文件引用
+    }
   }, [conversationKey]);
 
   useEffect(() => {
@@ -180,8 +198,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
     
     // 如果有初始消息或初始文件，自动发送（仅在新对话时）
-    if (initialMessage || initialFile) {
+    // 检查文件是否真的变化了（通过文件名和大小判断，而不是引用）
+    const fileChanged = initialFile && (
+      !lastInitialFileRef.current ||
+      lastInitialFileRef.current.name !== initialFile.name ||
+      lastInitialFileRef.current.size !== initialFile.size ||
+      lastInitialFileRef.current.lastModified !== initialFile.lastModified
+    );
+    
+    // 只在 conversationKey 变化或文件真正变化时发送
+    const shouldSend = (initialMessage || initialFile) && 
+      (lastConversationKeyRef.current !== conversationKey || fileChanged);
+    
+    if (shouldSend && !hasSentInitialRef.current) {
       hasSentInitialRef.current = true;
+      if (initialFile) {
+        lastInitialFileRef.current = initialFile;
+      }
       const message = initialMessage || (initialFile ? '请分析这个文档' : '');
       // 使用 setTimeout 确保在下一个事件循环中执行，避免重复调用
       const timer = setTimeout(() => {
@@ -272,13 +305,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
 
     try {
+      // 创建新的 AbortController
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      
       // 如果有文件，使用带文件的聊天接口
       if (file) {
-        await api.chatWithFile({
+        // 调用 API，立即获取 abort 函数（不等待流式响应完成）
+        const chatPromise = api.chatWithFile({
+          abortController,
           file,
           message: contentOverride ?? content,
           session_id: sessionId,
           user_id: 'default_user',
+          model_id: selectedModelId || undefined,
           knowledge_base_ids: localKnowledgeBaseIds.length > 0 ? localKnowledgeBaseIds : undefined,
           use_rag: localKnowledgeBaseIds.length > 0 ? true : undefined,
           onVectorizationStep: (step) => {
@@ -468,15 +508,43 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             );
             setIsThinking(false);
           },
+          onCancelled: () => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === agentId
+                  ? {
+                      ...m,
+                      content: m.content || '对话已中断',
+                      thinking: undefined,
+                      vectorizationStep: undefined,
+                    }
+                  : m,
+              ),
+            );
+            setIsThinking(false);
+          },
         });
+        // 立即获取并保存中断函数（不等待流式响应完成）
+        chatPromise.then((result) => {
+          abortFnRef.current = result.abort;
+        }).catch(() => {
+          // 如果出错，清除引用
+          abortFnRef.current = null;
+        });
+        // 等待流式响应完成
+        await chatPromise;
       } else {
         // 没有文件，使用流式聊天接口
         let accumulatedContent = '';
-        await api.chat({
+        // 先调用 API，立即获取 abort 函数（不等待完成）
+        const chatPromise = api.chat({
+          abortController,
           message: contentOverride ?? content,
           session_id: sessionId,
+          model_id: selectedModelId || undefined,
           knowledge_base_ids: localKnowledgeBaseIds.length > 0 ? localKnowledgeBaseIds : undefined,
           use_rag: localKnowledgeBaseIds.length > 0 ? true : undefined,
+          use_multi_agent: useMultiAgent,
           onSkillLoading: (data) => {
             console.log('[ChatPanel] 收到 skill_loading 事件:', data);
             setMessages((prev) =>
@@ -569,11 +637,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           },
           onToolCall: (data) => {
             console.log('[ChatPanel] 收到 tool_call 事件:', data);
+            // 检查是否是智能体调用（多agent模式）
+            const isAgentCall = data.tool_name && data.tool_name.startsWith('call_') && data.tool_name.endsWith('_agent');
+            const agentName = isAgentCall 
+              ? data.tool_name.replace('call_', '').replace('_agent', '').replace(/_/g, ' ')
+              : null;
+            
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === agentId
                   ? {
                       ...m,
+                      thinking: isAgentCall 
+                        ? [...(m.thinking || []), `🤖 正在调用智能体: ${agentName}...`].filter((v, i, a) => a.indexOf(v) === i)
+                        : m.thinking,
                       toolCalls: [
                         ...(m.toolCalls || []),
                         {
@@ -590,11 +667,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           },
           onToolResult: (data) => {
             console.log('[ChatPanel] 收到 tool_result 事件:', data);
+            // 检查是否是智能体调用结果（多agent模式）
+            const isAgentCall = data.tool_name && data.tool_name.startsWith('call_') && data.tool_name.endsWith('_agent');
+            const agentName = isAgentCall 
+              ? data.tool_name.replace('call_', '').replace('_agent', '').replace(/_/g, ' ')
+              : null;
+            
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === agentId
                   ? {
                       ...m,
+                      thinking: isAgentCall && data.success
+                        ? [...(m.thinking || []), `✓ 智能体 ${agentName} 已完成`].filter((v, i, a) => a.indexOf(v) === i)
+                        : isAgentCall && !data.success
+                        ? [...(m.thinking || []), `✗ 智能体 ${agentName} 调用失败: ${data.error || '未知错误'}`].filter((v, i, a) => a.indexOf(v) === i)
+                        : m.thinking,
                       toolCalls: (m.toolCalls || []).map((tc) =>
                         tc.tool_name === data.tool_name
                           ? {
@@ -652,7 +740,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             );
             setIsThinking(false);
           },
+          onCancelled: () => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === agentId
+                  ? {
+                      ...m,
+                      content: m.content || '对话已中断',
+                      thinking: undefined,
+                    }
+                  : m,
+              ),
+            );
+            setIsThinking(false);
+          },
         });
+        // 立即获取并保存中断函数（不等待流式响应完成）
+        chatPromise.then((result) => {
+          abortFnRef.current = result.abort;
+        }).catch(() => {
+          // 如果出错，清除引用
+          abortFnRef.current = null;
+        });
+        // 等待流式响应完成
+        await chatPromise;
       }
     } catch (error) {
       const message =
@@ -670,44 +781,124 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         ),
       );
       setIsThinking(false);
+    } finally {
+      // 清理中断控制器引用
+      abortControllerRef.current = null;
+      abortFnRef.current = null;
     }
   };
 
-  // 一键总结为方案
-  const handleGenerateSummary = async () => {
-    if (!sessionId || isGeneratingSummary) return;
+  // 中断当前对话
+  const handleCancel = async () => {
+    if (abortFnRef.current) {
+      try {
+        await abortFnRef.current();
+        setIsThinking(false);
+        // 更新最后一条 agent 消息，显示已中断
+        setMessages((prev) => {
+          const lastAgentMsg = [...prev].reverse().find(m => m.role === 'agent');
+          if (lastAgentMsg) {
+            return prev.map(m =>
+              m.id === lastAgentMsg.id
+                ? { ...m, content: m.content || '对话已中断', thinking: undefined }
+                : m
+            );
+          }
+          return prev;
+        });
+      } catch (error) {
+        console.error('中断对话失败:', error);
+      }
+    }
+  };
 
-    setIsGeneratingSummary(true);
-    setSummaryResult(null);
+  // 一键总结 - 改为对话形式
+  const handleGenerateSummary = async () => {
+    if (!sessionId || isThinking) return;
+
+    // 创建一个特殊的消息，触发总结流程
+    const summaryMessageId = `summary_${Date.now()}`;
+    const summaryMessage: Message = {
+      id: summaryMessageId,
+      role: 'user',
+      content: '一键总结',
+      createdAt: new Date().toISOString(),
+    };
+
+    // 添加用户消息
+    setMessages((prev) => [...prev, summaryMessage]);
+
+    // 创建助手消息（显示总结进度）
+    const agentMessageId = `summary_agent_${Date.now()}`;
+    const agentMessage: Message = {
+      id: agentMessageId,
+      role: 'agent',
+      content: '',
+      thinking: ['分析对话历史...', '筛选重要信息...', '生成方案文档...'],
+    };
+
+    setMessages((prev) => [...prev, agentMessage]);
+    setIsThinking(true);
 
     try {
       const response = await api.generateSummaryPlan(sessionId, {
         top_k: 20,
       });
 
-      if (response.success && response.data) {
-        setSummaryResult({
-          download_url: response.data.download_url,
-          plan_content: response.data.plan_content,
-          messages_used: response.data.messages_used,
-          total_messages: response.data.total_messages,
-        });
-        showSuccess('方案生成完成！');
+      if (response && response.plan_content_full) {
+        const { plan_content_full, download_url, file_name, file_type, messages_used, total_messages } = response;
+        
+        // 通知附件更新
+        notifyAttachmentUpdate();
+        
+        // 更新助手消息，显示总结结果
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === agentMessageId
+              ? {
+                  ...m,
+                  content: `✅ 已从 ${total_messages} 条消息中筛选出 ${messages_used} 条重要消息，生成完整方案。\n\n[查看方案预览](#preview:${encodeURIComponent(JSON.stringify({ content: plan_content_full, fileType: file_type, fileName: file_name, downloadUrl: download_url }))})`,
+                  thinking: undefined,
+                  // 添加特殊标记，用于预览
+                  fileName: file_name,
+                  // @ts-ignore - 添加自定义字段
+                  summaryData: {
+                    download_url,
+                    file_name,
+                    file_type,
+                    plan_content_full,
+                  },
+                }
+              : m
+          )
+        );
+        showSuccess('总结生成完成！可在右侧预览查看');
       } else {
-        throw new Error(response.error || '生成方案失败');
+        throw new Error('生成总结失败：响应数据不完整');
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : '生成方案失败，请重试';
+      const message = error instanceof Error ? error.message : '生成总结失败，请重试';
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === agentMessageId
+            ? {
+                ...m,
+                content: `⚠️ ${message}`,
+                thinking: undefined,
+              }
+            : m
+        )
+      );
       showError(message);
-      console.error('生成方案失败:', error);
+      console.error('生成总结失败:', error);
     } finally {
-      setIsGeneratingSummary(false);
+      setIsThinking(false);
     }
   };
 
-  // 判断是否应该显示"一键总结为方案"按钮（需要有对话历史且不是intro消息）
+  // 判断是否应该显示"一键总结"按钮（需要有对话历史且不是intro消息）
   const hasConversationHistory = messages.length > 1 && messages.some((m) => m.id !== 'intro');
-  const canGenerateSummary = sessionId && hasConversationHistory && !isGeneratingSummary;
+  const canGenerateSummary = sessionId && hasConversationHistory && !isThinking;
 
   return (
     <div className="h-full flex flex-col bg-white min-h-0 overflow-hidden">
@@ -717,122 +908,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         ref={scrollRef}
         className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-6 scroll-smooth min-h-0"
       >
-        {/* 一键总结为方案按钮和结果卡片 */}
-        {hasConversationHistory && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="sticky top-0 z-10 mb-4"
-          >
-            <AnimatePresence mode="wait">
-              {summaryResult ? (
-                // 生成结果卡片
-                <motion.div
-                  key="summary-result"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-4 shadow-lg"
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <FileText className="w-5 h-5 text-green-600" />
-                      <h3 className="text-sm font-semibold text-green-800">方案已生成</h3>
-                    </div>
-                    <button
-                      onClick={() => setSummaryResult(null)}
-                      className="p-1 rounded hover:bg-green-100 text-green-600 transition-colors"
-                      aria-label="关闭"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <p className="text-xs text-green-700 mb-3">
-                    已从 {summaryResult.total_messages} 条消息中筛选出 {summaryResult.messages_used} 条重要消息，生成完整方案。
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() => {
-                        window.open(summaryResult.download_url, '_blank');
-                      }}
-                      className="flex-1 bg-green-600 hover:bg-green-700 text-white"
-                      size="sm"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      下载方案文档
-                    </Button>
-                    <Button
-                      onClick={handleGenerateSummary}
-                      variant="outline"
-                      size="sm"
-                      disabled={isGeneratingSummary}
-                    >
-                      <RotateCw className={cn("w-4 h-4 mr-2", isGeneratingSummary && "animate-spin")} />
-                      重新生成
-                    </Button>
-                  </div>
-                  {summaryResult.plan_content && (
-                    <details className="mt-3">
-                      <summary className="text-xs text-green-700 cursor-pointer hover:text-green-800">
-                        预览方案内容
-                      </summary>
-                      <div className="mt-2 p-3 bg-white rounded-lg border border-green-200 max-h-40 overflow-auto text-xs">
-                        <MarkdownRenderer content={summaryResult.plan_content} />
-                      </div>
-                    </details>
-                  )}
-                </motion.div>
-              ) : isGeneratingSummary ? (
-                // 生成中状态
-                <motion.div
-                  key="summary-generating"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-4 shadow-lg"
-                >
-                  <div className="flex items-center gap-3">
-                    <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
-                    <div className="flex-1">
-                      <h3 className="text-sm font-semibold text-blue-800 mb-1">正在生成方案...</h3>
-                      <p className="text-xs text-blue-600">
-                        正在分析对话历史，筛选重要信息并生成方案文档
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 w-full bg-blue-200 rounded-full h-2 overflow-hidden">
-                    <motion.div
-                      className="bg-blue-600 h-2 rounded-full"
-                      initial={{ width: '0%' }}
-                      animate={{ width: '70%' }}
-                      transition={{ duration: 2, repeat: Infinity, repeatType: 'reverse' }}
-                    />
-                  </div>
-                </motion.div>
-              ) : (
-                // 一键总结为方案按钮
-                <motion.div
-                  key="summary-button"
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="flex justify-center"
-                >
-                  <Button
-                    onClick={handleGenerateSummary}
-                    disabled={!canGenerateSummary}
-                    className="bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white shadow-md hover:shadow-lg transition-all"
-                    size="sm"
-                  >
-                    <FileText className="w-4 h-4 mr-2" />
-                    一键总结为方案
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        )}
-
         {messages.map((msg, index) => (
           <motion.div
             key={msg.id}
@@ -1026,6 +1101,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   <MarkdownRenderer
                     content={preprocessContent(msg.content)}
                     citationEventName={CITATION_EVENT}
+                    onPreviewClick={onPreviewClick}
                   />
                 </div>
               )}
@@ -1039,24 +1115,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     {msg.sources.map((source: any, idx: number) => (
                       <div
                         key={idx}
-                        className={cn(
-                          "text-xs border-b border-green-200 pb-2 last:border-b-0 last:pb-0",
-                          onSourceClick && "cursor-pointer hover:bg-green-100 rounded px-2 py-1 transition-colors"
-                        )}
-                        onClick={() => {
-                          if (onSourceClick) {
-                            onSourceClick(msg.sources || []);
-                          }
-                        }}
+                        className="text-xs border-b border-green-200 pb-2 last:border-b-0 last:pb-0"
                       >
                         <div className="flex items-center justify-between mb-1">
                           <span className="font-medium text-green-800">
                             来源 {idx + 1}
                             {source.metadata?.filename && (
                               <span className="ml-2 text-green-600">({source.metadata.filename})</span>
-                            )}
-                            {onSourceClick && (
-                              <span className="ml-2 text-xs text-green-500">点击查看详情 →</span>
                             )}
                           </span>
                           {source.score !== undefined && (
@@ -1067,6 +1132,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                           <div className="text-green-700 mt-1 line-clamp-2">
                             {source.content.substring(0, 150)}...
                           </div>
+                        )}
+                        {onSourceClick && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onSourceClick(msg.sources || []);
+                            }}
+                            className="mt-2 text-xs text-green-600 hover:text-green-800 hover:underline cursor-pointer transition-colors"
+                          >
+                            点击查看详情 →
+                          </button>
                         )}
                       </div>
                     ))}
@@ -1127,6 +1205,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             错误: {toolCall.error}
                           </div>
                         )}
+                        {onToolCallClick && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onToolCallClick(msg.toolCalls || []);
+                            }}
+                            className="mt-2 text-xs text-orange-600 hover:text-orange-800 hover:underline cursor-pointer transition-colors"
+                          >
+                            在右侧查看完整结果 →
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1143,12 +1234,53 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         transition={{ duration: 0.3 }}
         className="p-4 bg-white/90 backdrop-blur-md border-t border-gray-200/80 shadow-lg"
       >
-        {/* 知识库选择器 */}
-        <div className="mb-2">
-          <KnowledgeBaseSelector
-            selectedIds={localKnowledgeBaseIds}
-            onSelectionChange={setLocalKnowledgeBaseIds}
-          />
+        {/* 模型、知识库和多Agent模式开关 */}
+        <div className="mb-2 flex gap-2">
+          <div className="flex-1">
+            <ModelSelector
+              selectedId={selectedModelId}
+              onSelectionChange={setSelectedModelId}
+            />
+          </div>
+          <div className="flex-1">
+            <KnowledgeBaseSelector
+              selectedIds={localKnowledgeBaseIds}
+              onSelectionChange={setLocalKnowledgeBaseIds}
+            />
+          </div>
+          <Button
+            variant={useMultiAgent ? "default" : "outline"}
+            size="sm"
+            onClick={() => setUseMultiAgent(!useMultiAgent)}
+            className={cn(
+              "flex items-center gap-1.5 transition-all whitespace-nowrap",
+              useMultiAgent && "bg-blue-600 hover:bg-blue-700 text-white shadow-md"
+            )}
+            title={useMultiAgent ? "多智能体协作模式已开启，协调智能体将自动调用专业智能体" : "点击开启多智能体协作模式"}
+          >
+            {useMultiAgent ? (
+              <>
+                <Users className="w-4 h-4" />
+                <span className="text-xs font-medium">多Agent</span>
+              </>
+            ) : (
+              <>
+                <User className="w-4 h-4" />
+                <span className="text-xs font-medium">单Agent</span>
+              </>
+            )}
+          </Button>
+          {hasConversationHistory && (
+            <Button
+              onClick={handleGenerateSummary}
+              disabled={!canGenerateSummary}
+              className="bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white shadow-md hover:shadow-lg transition-all whitespace-nowrap"
+              size="sm"
+            >
+              <FileText className="w-4 h-4 mr-2" />
+              一键总结
+            </Button>
+          )}
         </div>
         
         <AnimatePresence>
@@ -1219,26 +1351,43 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           />
           
           <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-            <Button 
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                // 防止重复发送：检查是否正在思考
-                if (!isThinking && (input.trim() || selectedFile)) {
-                  void handleSend();
-                }
-              }}
-              disabled={(!input.trim() && !selectedFile) || isThinking}
-              size="icon"
-              variant={input.trim() || selectedFile ? "default" : "secondary"}
-              className={cn(
-                "h-10 w-10 shrink-0 transition-all shadow-md",
-                (input.trim() || selectedFile) && "hover:shadow-lg"
-              )}
-            >
-              {isThinking ? <StopCircle className="w-5 h-5" /> : <Send className="w-5 h-5" />}
-            </Button>
+            {isThinking ? (
+              <Button 
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handleCancel();
+                }}
+                size="icon"
+                variant="destructive"
+                className="h-10 w-10 rounded-full bg-red-500 hover:bg-red-600 text-white"
+                title="中断对话"
+              >
+                <StopCircle className="w-5 h-5" />
+              </Button>
+            ) : (
+              <Button 
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // 防止重复发送：检查是否正在思考
+                  if (!isThinking && (input.trim() || selectedFile)) {
+                    void handleSend();
+                  }
+                }}
+                disabled={(!input.trim() && !selectedFile)}
+                size="icon"
+                variant={input.trim() || selectedFile ? "default" : "secondary"}
+                className={cn(
+                  "h-10 w-10 shrink-0 transition-all shadow-md",
+                  (input.trim() || selectedFile) && "hover:shadow-lg"
+                )}
+              >
+                <Send className="w-5 h-5" />
+              </Button>
+            )}
           </motion.div>
         </div>
         <div id="input-hint" className="text-center mt-2 text-xs text-gray-400" role="note">

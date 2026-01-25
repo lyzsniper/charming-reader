@@ -3,6 +3,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:1800
 export const API_ROUTES = {
   chat: '/chat',
   chatForm: '/chat/form',
+  chatCancel: '/chat/cancel',
   uploadPdf: '/upload',
   knowledgeBases: '/knowledge-bases',
   documents: '/documents',
@@ -18,6 +19,7 @@ export const API_ROUTES = {
   chatSession: (sessionId: string) => `/chat/sessions/${sessionId}`,
   chatSessionMessages: (sessionId: string) => `/chat/sessions/${sessionId}/messages`,
   chatSessionHistory: (sessionId: string) => `/chat/sessions/${sessionId}/history`,
+  chatSessionAttachments: (sessionId: string) => `/chat/sessions/${sessionId}/attachments`,
   generateSummaryPlan: (sessionId: string) => `/chat/sessions/${sessionId}/generate-summary`,
   translate: '/translate',
   translateBatch: '/translate/batch',
@@ -120,6 +122,7 @@ export interface ChatRequest {
   use_rag?: boolean;
   rag_top_k?: number;
   enable_rerank?: boolean;
+  use_multi_agent?: boolean;
 }
 
 export interface SkillInfo {
@@ -215,6 +218,7 @@ interface ChatOptions {
   use_rag?: boolean;
   rag_top_k?: number;
   enable_rerank?: boolean;
+  use_multi_agent?: boolean;
   onSkillLoading?: (data: { step: string; message: string; skill_name?: string }) => void;
   onSkillActivated?: (data: { skill_name: string; description: string; version?: string }) => void;
   onSkillContent?: (data: { skill_name: string; content_length: number }) => void;
@@ -226,9 +230,33 @@ interface ChatOptions {
   onToolCall?: (data: { tool_name: string; arguments: Record<string, any>; status: string; timestamp: string }) => void;
   onToolResult?: (data: { tool_name: string; result: any; success: boolean; error?: string; timestamp: string }) => void;
   onError?: (error: string) => void;
+  onCancelled?: () => void;
+  abortController?: AbortController;
 }
 
-const chat = async (options: ChatOptions): Promise<void> => {
+const chat = async (options: ChatOptions): Promise<{ abort: () => Promise<void> }> => {
+  const abortController = options.abortController || new AbortController();
+  
+  // 先定义中断函数，立即返回，这样调用者可以立即使用
+  const abort = async () => {
+    abortController.abort();
+    // 调用后端取消端点
+    if (options.session_id) {
+      try {
+        await request(API_ROUTES.chatCancel, {
+          method: 'POST',
+          query: { session_id: options.session_id },
+        });
+      } catch (e) {
+        console.error('取消请求失败:', e);
+      }
+    }
+  };
+  
+  // 立即创建并返回 result 对象，让调用者可以立即使用 abort 函数
+  const result = { abort };
+  
+  // 然后异步处理响应
   const url = buildUrl(API_ROUTES.chat);
   const response = await fetch(url, {
     method: 'POST',
@@ -242,7 +270,9 @@ const chat = async (options: ChatOptions): Promise<void> => {
       use_rag: options.use_rag,
       rag_top_k: options.rag_top_k,
       enable_rerank: options.enable_rerank,
+      use_multi_agent: options.use_multi_agent || false,
     }),
+    signal: abortController.signal,
   });
 
   if (!response.ok) {
@@ -265,109 +295,144 @@ const chat = async (options: ChatOptions): Promise<void> => {
     let currentEventType = '';
     let accumulatedContent = '';
     
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue; // 跳过空行
+    // 使用 Promise 包装读取逻辑，以便可以中断
+    const readStream = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
         
-        if (line.startsWith('event: ')) {
-          currentEventType = line.substring(7).trim();
-        } else if (line.startsWith('data: ')) {
-          const dataStr = line.substring(6).trim();
-          if (dataStr) {
-            try {
-              const data = JSON.parse(dataStr);
-              
-              // 添加调试日志
-              console.log(`[SSE] 收到事件: ${currentEventType}`, data);
-              
-              // 处理技能加载事件
-              if (currentEventType === 'skill_loading' && options.onSkillLoading) {
-                console.log('[SSE] 处理 skill_loading 事件');
-                options.onSkillLoading(data);
-              } 
-              // 处理技能激活事件
-              else if (currentEventType === 'skill_activated' && options.onSkillActivated) {
-                console.log('[SSE] 处理 skill_activated 事件');
-                options.onSkillActivated(data);
-              } 
-              // 处理技能内容事件
-              else if (currentEventType === 'skill_content' && options.onSkillContent) {
-                console.log('[SSE] 处理 skill_content 事件');
-                options.onSkillContent(data);
-              } 
-              // 处理RAG检索事件
-              else if (currentEventType === 'rag_retrieval' && options.onRagRetrieval) {
-                console.log('[SSE] 处理 rag_retrieval 事件');
-                options.onRagRetrieval(data);
-              } 
-              // 处理RAG检索结果事件
-              else if (currentEventType === 'rag_sources' && options.onRagSources) {
-                console.log('[SSE] 处理 rag_sources 事件, sources数量:', data.sources?.length);
-                options.onRagSources(data);
-              } 
-              // 处理Agent思考事件
-              else if (currentEventType === 'agent_thinking' && options.onAgentThinking) {
-                console.log('[SSE] 处理 agent_thinking 事件');
-                options.onAgentThinking(data);
-              } 
-              // 处理Agent内容事件（流式输出）
-              else if (currentEventType === 'agent_content' && options.onAgentContent) {
-                // data.content 是增量内容，需要累积
-                // 注意：如果 is_complete 为 true 但 content 为空，表示只是完成标记
-                if (data.content) {
-                  accumulatedContent += data.content;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue; // 跳过空行
+          
+          if (line.startsWith('event: ')) {
+            currentEventType = line.substring(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const dataStr = line.substring(6).trim();
+            if (dataStr) {
+              try {
+                const data = JSON.parse(dataStr);
+                
+                // 添加调试日志
+                console.log(`[SSE] 收到事件: ${currentEventType}`, data);
+                
+                // 处理技能加载事件
+                if (currentEventType === 'skill_loading' && options.onSkillLoading) {
+                  console.log('[SSE] 处理 skill_loading 事件');
+                  options.onSkillLoading(data);
+                } 
+                // 处理技能激活事件
+                else if (currentEventType === 'skill_activated' && options.onSkillActivated) {
+                  console.log('[SSE] 处理 skill_activated 事件');
+                  options.onSkillActivated(data);
+                } 
+                // 处理技能内容事件
+                else if (currentEventType === 'skill_content' && options.onSkillContent) {
+                  console.log('[SSE] 处理 skill_content 事件');
+                  options.onSkillContent(data);
+                } 
+                // 处理RAG检索事件
+                else if (currentEventType === 'rag_retrieval' && options.onRagRetrieval) {
+                  console.log('[SSE] 处理 rag_retrieval 事件');
+                  options.onRagRetrieval(data);
+                } 
+                // 处理RAG检索结果事件
+                else if (currentEventType === 'rag_sources' && options.onRagSources) {
+                  console.log('[SSE] 处理 rag_sources 事件, sources数量:', data.sources?.length);
+                  options.onRagSources(data);
+                } 
+                // 处理Agent思考事件
+                else if (currentEventType === 'agent_thinking' && options.onAgentThinking) {
+                  console.log('[SSE] 处理 agent_thinking 事件');
+                  options.onAgentThinking(data);
+                } 
+                // 处理Agent内容事件（流式输出）
+                else if (currentEventType === 'agent_content' && options.onAgentContent) {
+                  // data.content 是增量内容，需要累积
+                  // 注意：如果 is_complete 为 true 但 content 为空，表示只是完成标记
+                  if (data.content) {
+                    accumulatedContent += data.content;
+                  }
+                  // 即使 content 为空，也要发送更新（可能是完成标记）
+                  options.onAgentContent({ 
+                    content: accumulatedContent, 
+                    is_complete: data.is_complete || false 
+                  });
+                } 
+                // 处理Agent完成事件
+                else if (currentEventType === 'agent_complete' && options.onAgentComplete) {
+                  // 如果agent_complete事件中有response，使用它；否则使用累积的内容
+                  if (data.response && accumulatedContent !== data.response) {
+                    accumulatedContent = data.response;
+                  }
+                  options.onAgentComplete(data as ChatResponse);
+                } 
+                // 处理工具调用事件
+                else if (currentEventType === 'tool_call' && options.onToolCall) {
+                  console.log('[SSE] 处理 tool_call 事件:', data);
+                  options.onToolCall(data);
                 }
-                // 即使 content 为空，也要发送更新（可能是完成标记）
-                options.onAgentContent({ 
-                  content: accumulatedContent, 
-                  is_complete: data.is_complete || false 
-                });
-              } 
-              // 处理Agent完成事件
-              else if (currentEventType === 'agent_complete' && options.onAgentComplete) {
-                // 如果agent_complete事件中有response，使用它；否则使用累积的内容
-                if (data.response && accumulatedContent !== data.response) {
-                  accumulatedContent = data.response;
+                // 处理工具调用结果事件
+                else if (currentEventType === 'tool_result' && options.onToolResult) {
+                  console.log('[SSE] 处理 tool_result 事件:', data);
+                  options.onToolResult(data);
                 }
-                options.onAgentComplete(data as ChatResponse);
-              } 
-              // 处理工具调用事件
-              else if (currentEventType === 'tool_call' && options.onToolCall) {
-                console.log('[SSE] 处理 tool_call 事件:', data);
-                options.onToolCall(data);
+                // 处理错误事件
+                else if (currentEventType === 'error' && options.onError) {
+                  options.onError(data.error || '未知错误');
+                }
+                // 处理取消事件
+                else if (currentEventType === 'cancelled' && options.onCancelled) {
+                  options.onCancelled();
+                }
+              } catch (e) {
+                console.error('解析SSE数据失败:', e, dataStr, '事件类型:', currentEventType);
               }
-              // 处理工具调用结果事件
-              else if (currentEventType === 'tool_result' && options.onToolResult) {
-                console.log('[SSE] 处理 tool_result 事件:', data);
-                options.onToolResult(data);
-              }
-              // 处理错误事件
-              else if (currentEventType === 'error' && options.onError) {
-                options.onError(data.error || '未知错误');
-              }
-            } catch (e) {
-              console.error('解析SSE数据失败:', e, dataStr, '事件类型:', currentEventType);
             }
+            // 重置事件类型，准备处理下一个事件
+            currentEventType = '';
           }
-          // 重置事件类型，准备处理下一个事件
-          currentEventType = '';
         }
       }
+    };
+    
+    // 执行读取，如果被中断则捕获错误
+    try {
+      await readStream();
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        // 请求被中断
+        if (options.onCancelled) {
+          options.onCancelled();
+        }
+        // 调用后端取消端点
+        if (options.session_id) {
+          try {
+            await request(API_ROUTES.chatCancel, {
+              method: 'POST',
+              query: { session_id: options.session_id },
+            });
+          } catch (cancelError) {
+            console.error('取消请求失败:', cancelError);
+          }
+        }
+        return result;
+      }
+      throw e;
     }
+    
+    return result;
   } else {
     // 兼容旧格式（JSON响应）
     const data = await response.json();
     if (options.onAgentComplete) {
       options.onAgentComplete(data as ChatResponse);
     }
+    return result;
   }
 };
 
@@ -398,9 +463,11 @@ interface ChatWithFileOptions {
   onToolCall?: (data: { tool_name: string; arguments: Record<string, any>; status: string; timestamp: string }) => void;
   onToolResult?: (data: { tool_name: string; result: any; success: boolean; error?: string; timestamp: string }) => void;
   onError?: (error: string) => void;
+  onCancelled?: () => void;
+  abortController?: AbortController;
 }
 
-const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
+const chatWithFile = async (options: ChatWithFileOptions): Promise<{ abort: () => Promise<void> }> => {
   const formData = new FormData();
   
   if (options.file) {
@@ -422,10 +489,33 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
   formData.append('enable_rerank', String(options.enable_rerank ?? true));
 
   // 使用 /chat/form 端点来处理文件上传
+  const abortController = options.abortController || new AbortController();
+  
+  // 先定义中断函数，立即返回，这样调用者可以立即使用
+  const abort = async () => {
+    abortController.abort();
+    // 调用后端取消端点
+    if (options.session_id) {
+      try {
+        await request(API_ROUTES.chatCancel, {
+          method: 'POST',
+          query: { session_id: options.session_id },
+        });
+      } catch (e) {
+        console.error('取消请求失败:', e);
+      }
+    }
+  };
+  
+  // 立即创建并返回 result 对象，让调用者可以立即使用 abort 函数
+  const result = { abort };
+  
+  // 然后异步处理响应
   const url = buildUrl(API_ROUTES.chatForm);
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
+    signal: abortController.signal,
   });
 
   if (!response.ok) {
@@ -448,117 +538,152 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<void> => {
     let currentEventType = '';
     let accumulatedContent = ''; // 累积流式内容
     
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue; // 跳过空行
+    // 使用 Promise 包装读取逻辑，以便可以中断
+    const readStream = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
         
-        if (line.startsWith('event: ')) {
-          currentEventType = line.substring(7).trim();
-        } else if (line.startsWith('data: ')) {
-          const dataStr = line.substring(6).trim();
-          if (dataStr) {
-            try {
-              const data = JSON.parse(dataStr);
-              
-              // 处理向量化步骤事件
-              if (currentEventType === 'vectorization_step' && options.onVectorizationStep) {
-                options.onVectorizationStep(data);
-              } 
-              // 处理技能加载事件
-              else if (currentEventType === 'skill_loading' && options.onSkillLoading) {
-                options.onSkillLoading(data);
-              } 
-              // 处理技能激活事件
-              else if (currentEventType === 'skill_activated' && options.onSkillActivated) {
-                options.onSkillActivated(data);
-              } 
-              // 处理技能内容事件
-              else if (currentEventType === 'skill_content' && options.onSkillContent) {
-                options.onSkillContent(data);
-              } 
-              // 处理RAG检索事件
-              else if (currentEventType === 'rag_retrieval' && options.onRagRetrieval) {
-                options.onRagRetrieval(data);
-              } 
-              // 处理RAG检索结果事件
-              else if (currentEventType === 'rag_sources' && options.onRagSources) {
-                options.onRagSources(data);
-              } 
-              // 处理Agent思考事件
-              else if (currentEventType === 'agent_thinking' && options.onAgentThinking) {
-                options.onAgentThinking(data);
-              } 
-              // 处理Agent内容事件（流式输出）
-              else if (currentEventType === 'agent_content' && options.onAgentContent) {
-                // data.content 是增量内容，需要累积
-                // 注意：如果 is_complete 为 true 但 content 为空，表示只是完成标记
-                if (data.content) {
-                  accumulatedContent += data.content;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue; // 跳过空行
+          
+          if (line.startsWith('event: ')) {
+            currentEventType = line.substring(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const dataStr = line.substring(6).trim();
+            if (dataStr) {
+              try {
+                const data = JSON.parse(dataStr);
+                
+                // 处理向量化步骤事件
+                if (currentEventType === 'vectorization_step' && options.onVectorizationStep) {
+                  options.onVectorizationStep(data);
+                } 
+                // 处理技能加载事件
+                else if (currentEventType === 'skill_loading' && options.onSkillLoading) {
+                  options.onSkillLoading(data);
+                } 
+                // 处理技能激活事件
+                else if (currentEventType === 'skill_activated' && options.onSkillActivated) {
+                  options.onSkillActivated(data);
+                } 
+                // 处理技能内容事件
+                else if (currentEventType === 'skill_content' && options.onSkillContent) {
+                  options.onSkillContent(data);
+                } 
+                // 处理RAG检索事件
+                else if (currentEventType === 'rag_retrieval' && options.onRagRetrieval) {
+                  options.onRagRetrieval(data);
+                } 
+                // 处理RAG检索结果事件
+                else if (currentEventType === 'rag_sources' && options.onRagSources) {
+                  options.onRagSources(data);
+                } 
+                // 处理Agent思考事件
+                else if (currentEventType === 'agent_thinking' && options.onAgentThinking) {
+                  options.onAgentThinking(data);
+                } 
+                // 处理Agent内容事件（流式输出）
+                else if (currentEventType === 'agent_content' && options.onAgentContent) {
+                  // data.content 是增量内容，需要累积
+                  // 注意：如果 is_complete 为 true 但 content 为空，表示只是完成标记
+                  if (data.content) {
+                    accumulatedContent += data.content;
+                  }
+                  // 即使 content 为空，也要发送更新（可能是完成标记）
+                  options.onAgentContent({ 
+                    content: accumulatedContent, 
+                    is_complete: data.is_complete || false 
+                  });
+                } 
+                // 处理Agent完成事件
+                else if (currentEventType === 'agent_complete' && options.onChatResponse) {
+                  // 如果agent_complete事件中有response，使用它；否则使用累积的内容
+                  if (data.response && accumulatedContent !== data.response) {
+                    accumulatedContent = data.response;
+                  }
+                  options.onChatResponse(data as ChatResponse);
+                } 
+                // 处理聊天响应事件（兼容旧格式）
+                else if (currentEventType === 'chat_response' && options.onChatResponse) {
+                  options.onChatResponse(data as ChatResponse);
                 }
-                // 即使 content 为空，也要发送更新（可能是完成标记）
-                options.onAgentContent({ 
-                  content: accumulatedContent, 
-                  is_complete: data.is_complete || false 
-                });
-              } 
-              // 处理Agent完成事件
-              else if (currentEventType === 'agent_complete' && options.onChatResponse) {
-                // 如果agent_complete事件中有response，使用它；否则使用累积的内容
-                if (data.response && accumulatedContent !== data.response) {
-                  accumulatedContent = data.response;
+                // 处理工具调用事件
+                else if (currentEventType === 'tool_call' && options.onToolCall) {
+                  console.log('[SSE] 处理 tool_call 事件:', data);
+                  options.onToolCall(data);
                 }
-                options.onChatResponse(data as ChatResponse);
-              } 
-              // 处理聊天响应事件（兼容旧格式）
-              else if (currentEventType === 'chat_response' && options.onChatResponse) {
-                options.onChatResponse(data as ChatResponse);
+                // 处理工具调用结果事件
+                else if (currentEventType === 'tool_result' && options.onToolResult) {
+                  console.log('[SSE] 处理 tool_result 事件:', data);
+                  options.onToolResult(data);
+                }
+                // 处理错误事件
+                else if (currentEventType === 'error' && options.onError) {
+                  options.onError(data.error || '未知错误');
+                } 
+                // 处理取消事件
+                else if (currentEventType === 'cancelled' && options.onCancelled) {
+                  options.onCancelled();
+                }
+                // 处理聊天开始事件
+                else if (currentEventType === 'chat_start' && options.onVectorizationStep) {
+                  options.onVectorizationStep({
+                    step: 'chat_start',
+                    message: data.message || '开始生成回答...',
+                    progress: undefined,
+                    details: undefined
+                  });
+                }
+              } catch (e) {
+                console.error('解析SSE数据失败:', e, dataStr, '事件类型:', currentEventType);
               }
-              // 处理工具调用事件
-              else if (currentEventType === 'tool_call' && options.onToolCall) {
-                console.log('[SSE] 处理 tool_call 事件:', data);
-                options.onToolCall(data);
-              }
-              // 处理工具调用结果事件
-              else if (currentEventType === 'tool_result' && options.onToolResult) {
-                console.log('[SSE] 处理 tool_result 事件:', data);
-                options.onToolResult(data);
-              }
-              // 处理错误事件
-              else if (currentEventType === 'error' && options.onError) {
-                options.onError(data.error || '未知错误');
-              } 
-              // 处理聊天开始事件
-              else if (currentEventType === 'chat_start' && options.onVectorizationStep) {
-                options.onVectorizationStep({
-                  step: 'chat_start',
-                  message: data.message || '开始生成回答...',
-                  progress: undefined,
-                  details: undefined
-                });
-              }
-            } catch (e) {
-              console.error('解析SSE数据失败:', e, dataStr, '事件类型:', currentEventType);
             }
+            // 重置事件类型，准备处理下一个事件
+            currentEventType = '';
           }
-          // 重置事件类型，准备处理下一个事件
-          currentEventType = '';
         }
       }
+    };
+    
+    // 执行读取，如果被中断则捕获错误
+    try {
+      await readStream();
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        // 请求被中断
+        if (options.onCancelled) {
+          options.onCancelled();
+        }
+        // 调用后端取消端点
+        if (options.session_id) {
+          try {
+            await request(API_ROUTES.chatCancel, {
+              method: 'POST',
+              query: { session_id: options.session_id },
+            });
+          } catch (cancelError) {
+            console.error('取消请求失败:', cancelError);
+          }
+        }
+        return result;
+      }
+      throw e;
     }
+    
+    return result;
   } else {
     // 没有文件，使用普通JSON响应
     const data = await response.json();
     if (options.onChatResponse) {
       options.onChatResponse(data as ChatResponse);
     }
+    return result;
   }
 };
 
@@ -883,16 +1008,38 @@ const getChatHistory = (sessionId: string, params?: { skip?: number; limit?: num
 
 // 一键总结为方案相关接口
 export interface SummaryPlanResponse {
-  success: boolean;
-  data: {
-    object_name: string;
-    download_url: string;
-    plan_content: string;
-    messages_used: number;
-    total_messages: number;
-  };
-  error?: string;
+  object_name: string;
+  download_url: string;
+  plan_content: string;
+  plan_content_full: string;  // 完整内容（用于预览）
+  file_name: string;  // 文件名
+  file_type: string;  // 文件类型
+  messages_used: number;
+  total_messages: number;
 }
+
+export interface ChatAttachment {
+  id: string;
+  session_id: string;
+  message_id?: string;
+  attachment_type: 'upload' | 'generated' | 'summary';
+  file_name: string;
+  file_type: string;
+  file_size?: number;
+  storage_object_name?: string;
+  download_url?: string;
+  preview_url?: string;
+  description?: string;
+  attachment_metadata?: Record<string, any>;
+  created_at: string;
+}
+
+const getChatAttachments = (sessionId: string, params?: { attachment_type?: string }) => {
+  return request<ChatAttachment[]>(API_ROUTES.chatSessionAttachments(sessionId), {
+    method: 'GET',
+    query: params,
+  });
+};
 
 const generateSummaryPlan = (sessionId: string, params?: { top_k?: number; max_messages?: number }) => {
   return request<SummaryPlanResponse>(API_ROUTES.generateSummaryPlan(sessionId), {
@@ -1033,6 +1180,7 @@ export const api = {
   deleteChatSession,
   getChatMessages,
   getChatHistory,
+  getChatAttachments,
   generateSummaryPlan,
   translate,
   translateDocument,

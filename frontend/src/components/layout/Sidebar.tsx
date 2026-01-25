@@ -1,5 +1,5 @@
 import React, { useRef, useCallback } from 'react';
-import { BookOpen, MessageSquare, Settings, History } from 'lucide-react';
+import { BookOpen, MessageSquare, Settings, History, Brain } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -8,10 +8,12 @@ interface SidebarProps {
   onOpenKnowledge: () => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
+  onOpenModels?: () => void;
   onGoHome: () => void;
   isKnowledgeOpen?: boolean;
   isHistoryOpen?: boolean;
   isSettingsOpen?: boolean;
+  isModelsOpen?: boolean;
   viewMode?: 'home' | 'workspace';
 }
 
@@ -19,10 +21,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenKnowledge, 
   onOpenHistory, 
   onOpenSettings,
+  onOpenModels,
   onGoHome,
   isKnowledgeOpen = false,
   isHistoryOpen = false,
   isSettingsOpen = false,
+  isModelsOpen = false,
   viewMode = 'home',
 }) => {
   // 使用 ref 来跟踪上次点击时间，实现简单的防抖
@@ -47,6 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleKnowledgeClick = createDebouncedHandler('knowledge', onOpenKnowledge);
   const handleHistoryClick = createDebouncedHandler('history', onOpenHistory);
   const handleSettingsClick = createDebouncedHandler('settings', onOpenSettings);
+  const handleModelsClick = createDebouncedHandler('models', onOpenModels || (() => {}));
   const handleGoHomeClick = createDebouncedHandler('home', onGoHome);
 
   // Chat 按钮在 workspace 模式下激活
@@ -109,6 +114,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label="Knowledge" 
           active={isKnowledgeOpen}
           onClick={handleKnowledgeClick} 
+        />
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.25 }}
+        >
+        <SidebarBtn 
+          icon={<Brain className="w-5 h-5" />} 
+          label="Models" 
+          active={isModelsOpen}
+          onClick={handleModelsClick} 
         />
         </motion.div>
       </div>

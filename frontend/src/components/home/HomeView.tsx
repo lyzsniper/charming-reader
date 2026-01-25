@@ -1,16 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Paperclip, ArrowUp, FileText, Search, Sparkles, Database, History, X, Clock, MessageSquare } from 'lucide-react';
+import { Paperclip, ArrowUp, FileText, Search, Sparkles, Database, History, X, Clock, MessageSquare, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { showError } from '@/utils/dialogs';
 import { KnowledgeBaseSelector } from '@/components/common/KnowledgeBaseSelector';
+import { ModelSelector } from '@/components/common/ModelSelector';
 import { EmptyState } from '@/components/common/EmptyState';
 import { api } from '@/services/api';
 import type { SessionHistoryItem } from '@/services/api';
 
 interface HomeViewProps {
-  onStartChat: (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string) => void;
+  onStartChat: (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string, modelId?: string | null, useMultiAgent?: boolean) => void;
   onOpenKnowledge?: () => void;
   isHistoryOpen?: boolean;
   onHistoryClose?: () => void;
@@ -20,6 +21,8 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
   const [isDragging, setIsDragging] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [useMultiAgent, setUseMultiAgent] = useState<boolean>(false);
   const [sessions, setSessions] = useState<SessionHistoryItem[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -62,13 +65,13 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
 
   const handleFileUpload = (file: File) => {
     // 允许所有文件类型上传到对话中
-    onStartChat("", file, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined);
+    onStartChat("", file, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined, undefined, selectedModelId, useMultiAgent);
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (inputValue.trim()) {
-      onStartChat(inputValue, undefined, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined);
+      onStartChat(inputValue, undefined, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined, undefined, selectedModelId, useMultiAgent);
     }
   };
 
@@ -202,6 +205,37 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
                       <Paperclip className="w-5 h-5" />
                     </Button>
                   </motion.div>
+                  {/* 模型选择器 */}
+                  <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                    <ModelSelector
+                      selectedId={selectedModelId}
+                      onSelectionChange={setSelectedModelId}
+                      variant="light"
+                      className="pointer-events-auto"
+                    />
+                  </motion.div>
+                  {/* 多智能体模式切换 */}
+                  <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                    <Button
+                      type="button"
+                      variant={useMultiAgent ? "default" : "ghost"}
+                      size="icon"
+                      className={cn(
+                        "rounded-xl pointer-events-auto transition-all",
+                        useMultiAgent 
+                          ? "bg-blue-600 hover:bg-blue-700 text-white shadow-md" 
+                          : "text-gray-400 hover:text-gray-600 hover:bg-gray-100/50"
+                      )}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setUseMultiAgent(!useMultiAgent);
+                      }}
+                      title={useMultiAgent ? "多智能体协作模式已开启" : "点击开启多智能体协作模式"}
+                    >
+                      <Users className={cn("w-5 h-5", useMultiAgent && "text-white")} />
+                    </Button>
+                  </motion.div>
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -263,27 +297,13 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
               transition={{ duration: 0.3, delay: 0.6 + i * 0.1 }}
               whileHover={{ scale: 1.05, y: -2 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => onStartChat(action.text, undefined, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined)}
+              onClick={() => onStartChat(action.text, undefined, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined, undefined, selectedModelId, useMultiAgent)}
               className="flex items-center gap-2 px-4 py-2 bg-white/70 hover:bg-white/90 backdrop-blur-sm border border-gray-200/50 rounded-full text-sm text-gray-700 hover:text-black transition-all shadow-md hover:shadow-lg hover:border-gray-300/50"
             >
               {action.icon}
               {action.text}
             </motion.button>
           ))}
-          {onOpenKnowledge && (
-            <motion.button
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: 0.9 }}
-              whileHover={{ scale: 1.05, y: -2 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={onOpenKnowledge}
-              className="flex items-center gap-2 px-4 py-2 bg-white/70 hover:bg-white/90 backdrop-blur-sm border border-gray-200/50 rounded-full text-sm text-gray-700 hover:text-black transition-all shadow-md hover:shadow-lg hover:border-gray-300/50"
-            >
-              <Database className="w-4 h-4" />
-              知识库管理
-            </motion.button>
-          )}
         </motion.div>
       </motion.div>
       
@@ -373,7 +393,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
                           e.preventDefault();
                           e.stopPropagation();
                           onHistoryClose?.();
-                          onStartChat(undefined, undefined, undefined, session.session_id);
+                          onStartChat(undefined, undefined, undefined, session.session_id, selectedModelId, useMultiAgent);
                         }}
                         className="w-full text-left p-3 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200 transition-colors group cursor-pointer active:bg-gray-100 pointer-events-auto"
                       >

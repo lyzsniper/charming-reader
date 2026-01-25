@@ -1,6 +1,8 @@
 from google.adk import Runner
 from google.adk.sessions import Session
+from google.adk.agents import Agent
 from google.genai.types import Content, Part
+from contextvars import ContextVar
 from core.config import settings
 from core.logger import LoggerFactory
 from services.session_service import get_session_service
@@ -128,22 +130,33 @@ async def run_agent_with_rag(
             activated_skills = activated
     
     # ===== 步骤 3: 创建 Agent 和 Runner =====
-    # 获取模型配置（如果提供了model_id和db）
-    model_config = None
-    if model_id and db:
-        try:
-            model_config = ModelConfigurationService.get_model_for_agent(db, model_id)
-            logger.info(f"使用指定的模型配置: id={model_id}, model={model_config.get('model')}")
-        except Exception as e:
-            logger.warning(f"获取模型配置失败: {e}，使用默认配置")
-    elif db:
-        # 如果没有指定model_id，尝试获取激活的模型配置
-        try:
-            model_config = ModelConfigurationService.get_model_for_agent(db)
-        except Exception as e:
-            logger.warning(f"获取模型配置失败: {e}，使用默认配置")
-    
-    agent = await create_agent_with_skills(model_config=model_config)
+    # 如果提供了自定义agent，直接使用；否则创建新的agent
+    if custom_agent:
+        agent = custom_agent
+        logger.info("✓ 使用提供的自定义 Agent")
+    else:
+        # 获取模型配置（如果提供了model_id和db）
+        model_config = None
+        if model_id and db:
+            try:
+                model_config = ModelConfigurationService.get_model_for_agent(db, model_id)
+                logger.info(f"使用指定的模型配置: id={model_id}, model={model_config.get('model')}")
+            except Exception as e:
+                logger.warning(f"获取模型配置失败: {e}，使用默认配置")
+        elif db:
+            # 如果没有指定model_id，尝试获取激活的模型配置
+            try:
+                model_config = ModelConfigurationService.get_model_for_agent(db)
+            except Exception as e:
+                logger.warning(f"获取模型配置失败: {e}，使用默认配置")
+        
+        # 如果启用多智能体模式，使用协调智能体
+        if use_multi_agent:
+            logger.info("✓ 启用多智能体协作模式，使用协调智能体")
+            from agents.coordinator_agent import create_coordinator_agent
+            agent = await create_coordinator_agent(model_config=model_config)
+        else:
+            agent = await create_agent_with_skills(model_config=model_config)
     active_skills = skills_manager.get_active_skills()
     active_skills_count = len(active_skills)
     if active_skills_count > 0:
@@ -402,7 +415,10 @@ async def run_agent_with_rag_stream(
     session_id_for_temp_files: Optional[str] = None,
     yield_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
     model_id: Optional[UUID] = None,
-    db: Optional[Any] = None
+    db: Optional[Any] = None,
+    custom_agent: Optional[Agent] = None,
+    use_multi_agent: bool = False,
+    cancellation_flag: Optional[Callable[[], Awaitable[bool]]] = None
 ) -> Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]], Optional[str]]:
     """
     运行智能体（流式版本），支持 RAG 检索和 Session 管理，支持通过回调函数发送流式事件
@@ -417,12 +433,26 @@ async def run_agent_with_rag_stream(
         enable_rerank: 是否启用重排序
         session_id_for_temp_files: 临时文件会话ID
         yield_event: 事件回调函数 (event_type, event_data) -> None
+        model_id: 模型配置ID（可选）
+        db: 数据库会话（可选）
+        custom_agent: 自定义Agent实例（可选，如果提供则直接使用）
+        use_multi_agent: 是否启用多智能体协作模式（使用协调智能体）
+        cancellation_flag: 取消标志检查函数，返回 True 表示已取消
     
     Returns:
         Tuple[response_text, actual_session_id, rag_sources, activated_skills, skills_prompt]
     """
+    async def _check_cancelled():
+        """检查是否已取消"""
+        if cancellation_flag:
+            return await cancellation_flag()
+        return False
+    
     async def _yield(event_type: str, event_data: Dict[str, Any]):
         """内部辅助函数，发送事件"""
+        # 检查是否已取消
+        if await _check_cancelled():
+            raise asyncio.CancelledError("任务已被取消")
         if yield_event:
             await yield_event(event_type, event_data)
     
@@ -554,36 +584,59 @@ async def run_agent_with_rag_stream(
     logger.info("正在创建Agent...")
     await _yield("agent_thinking", {"message": "正在初始化Agent..."})
     
-    # 获取模型配置（如果提供了model_id和db）
-    model_config = None
-    if model_id and db:
-        try:
-            model_config = ModelConfigurationService.get_model_for_agent(db, model_id)
-            logger.info(f"使用指定的模型配置: id={model_id}, model={model_config.get('model')}")
-        except Exception as e:
-            logger.warning(f"获取模型配置失败: {e}，使用默认配置")
-    elif db:
-        # 如果没有指定model_id，尝试获取激活的模型配置
-        try:
-            model_config = ModelConfigurationService.get_model_for_agent(db)
-        except Exception as e:
-            logger.warning(f"获取模型配置失败: {e}，使用默认配置")
-    
-    agent = await create_agent_with_skills(model_config=model_config)
-    active_skills = skills_manager.get_active_skills()
-    active_skills_count = len(active_skills)
-    if active_skills_count > 0:
-        logger.info(f"✓ 技能注入: 已将 {active_skills_count} 个技能注入 Agent 上下文")
-        skills_prompt = skills_manager.get_skills_prompt_extension()
-        if skills_prompt:
-            logger.debug(f"技能提示词长度: {len(skills_prompt)} 字符")
+    # 如果提供了自定义agent，直接使用；否则创建新的agent
+    if custom_agent:
+        agent = custom_agent
+        logger.info("✓ 使用提供的自定义 Agent")
+        active_skills = []
+        skills_prompt = None
+    else:
+        # 获取模型配置（如果提供了model_id和db）
+        model_config = None
+        if model_id and db:
+            try:
+                model_config = ModelConfigurationService.get_model_for_agent(db, model_id)
+                logger.info(f"使用指定的模型配置: id={model_id}, model={model_config.get('model')}")
+            except Exception as e:
+                logger.warning(f"获取模型配置失败: {e}，使用默认配置")
+        elif db:
+            # 如果没有指定model_id，尝试获取激活的模型配置
+            try:
+                model_config = ModelConfigurationService.get_model_for_agent(db)
+            except Exception as e:
+                logger.warning(f"获取模型配置失败: {e}，使用默认配置")
         
-        if not activated_skills:
-            activated_skills = active_skills
-        
-        await _yield("agent_thinking", {
-            "message": f"已注入 {active_skills_count} 个技能到Agent上下文"
-        })
+        # 如果启用多智能体模式，使用协调智能体
+        if use_multi_agent:
+            logger.info("✓ 启用多智能体协作模式，使用协调智能体")
+            await _yield("agent_thinking", {
+                "message": "正在初始化多智能体协作系统..."
+            })
+            from agents.coordinator_agent import create_coordinator_agent
+            agent = await create_coordinator_agent(model_config=model_config)
+            await _yield("agent_thinking", {
+                "message": "✓ 协调智能体已就绪，可调用多个专业智能体"
+            })
+            active_skills = []
+            skills_prompt = None
+        else:
+            agent = await create_agent_with_skills(model_config=model_config)
+            active_skills = skills_manager.get_active_skills()
+            active_skills_count = len(active_skills)
+            if active_skills_count > 0:
+                logger.info(f"✓ 技能注入: 已将 {active_skills_count} 个技能注入 Agent 上下文")
+                skills_prompt = skills_manager.get_skills_prompt_extension()
+                if skills_prompt:
+                    logger.debug(f"技能提示词长度: {len(skills_prompt)} 字符")
+                
+                if not activated_skills:
+                    activated_skills = active_skills
+                
+                await _yield("agent_thinking", {
+                    "message": f"已注入 {active_skills_count} 个技能到Agent上下文"
+                })
+            else:
+                skills_prompt = None
     
     # 创建 Runner
     runner = Runner(
@@ -591,6 +644,14 @@ async def run_agent_with_rag_stream(
         session_service=session_service,
         app_name="paper_agent"
     )
+    
+    # ===== 步骤 3.6: 设置上下文变量（用于多智能体协作时保持会话一致性）=====
+    if use_multi_agent:
+        from agents.a2a_service import _current_session_id, _current_user_id, _current_app_name
+        _current_session_id.set(session_id)
+        _current_user_id.set(user_id)
+        _current_app_name.set("paper_agent")  # 主 session 的 app_name
+        logger.info(f"✓ 已设置上下文变量: session_id={session_id}, user_id={user_id}, app_name=paper_agent（多智能体模式）")
     
     # ===== 步骤 3.5: RAG 检索 =====
     if knowledge_base_ids or session_id_for_temp_files:
@@ -604,6 +665,10 @@ async def run_agent_with_rag_stream(
     rag_context = ""
     
     if use_rag and (knowledge_base_ids or session_id_for_temp_files):
+        # 检查是否已取消
+        if await _check_cancelled():
+            raise asyncio.CancelledError("任务已被取消")
+        
         # 优先级：临时文件 > 知识库
         if session_id_for_temp_files:
             logger.info(f"执行RAG检索（临时文件）: session_id={session_id_for_temp_files}, top_k={rag_top_k}")
@@ -612,6 +677,9 @@ async def run_agent_with_rag_stream(
                 "message": "正在从上传文档中检索相关内容...",
                 "type": "temp_file"
             })
+            # 再次检查是否已取消
+            if await _check_cancelled():
+                raise asyncio.CancelledError("任务已被取消")
             try:
                 from services.rag_service import RAGService
                 
@@ -681,6 +749,9 @@ async def run_agent_with_rag_stream(
                 "type": "knowledge_base",
                 "knowledge_base_ids": [str(kb_id) for kb_id in knowledge_base_ids]
             })
+            # 检查是否已取消
+            if await _check_cancelled():
+                raise asyncio.CancelledError("任务已被取消")
             try:
                 from services.rag_service import RAGService
                 
@@ -762,6 +833,11 @@ async def run_agent_with_rag_stream(
             session_id=session_id,
             new_message=content
         ):
+            # 检查是否已取消
+            if await _check_cancelled():
+                logger.info("检测到取消请求，停止处理事件")
+                raise asyncio.CancelledError("任务已被取消")
+            
             event_count += 1
             # 从事件中提取增量文本内容
             try:

@@ -78,7 +78,20 @@ async def score_message_importance(
         )
         
         # 创建临时会话进行打分
+        session_service = get_session_service()
         temp_session_id = f"temp_score_{uuid4()}"
+        
+        # 确保会话存在（ADK Runner 要求 Session 必须预先存在）
+        try:
+            await session_service.create_session(
+                app_name="summary_agent",
+                user_id="system",
+                session_id=temp_session_id,
+            )
+        except Exception:
+            # 会话可能已存在，忽略错误
+            pass
+        
         score_content = Content(parts=[Part(text=scoring_prompt)])
         
         response_text = ""
@@ -214,7 +227,20 @@ async def generate_plan_content(
         )
         
         # 创建临时会话进行总结
+        session_service = get_session_service()
         temp_session_id = f"temp_summary_{uuid4()}"
+        
+        # 确保会话存在（ADK Runner 要求 Session 必须预先存在）
+        try:
+            await session_service.create_session(
+                app_name="summary_agent",
+                user_id="system",
+                session_id=temp_session_id,
+            )
+        except Exception:
+            # 会话可能已存在，忽略错误
+            pass
+        
         summary_content = Content(parts=[Part(text=summary_prompt)])
         
         plan_content = ""
@@ -343,55 +369,30 @@ async def generate_summary_plan(
         
         db = SessionLocal()
         try:
-            messages = []
-            
-            # 从 ChatHistory 的关系对象获取消息（如果已加载）
+            # 直接使用 ChatHistory 的 ID 来查询消息，避免 DetachedInstanceError
+            # 收集所有消息ID
+            message_ids = []
             for history in chat_histories:
-                # 尝试通过关系对象获取（如果已加载）
-                if hasattr(history, 'user_message') and history.user_message:
-                    user_msg = history.user_message
-                    messages.append({
-                        "role": user_msg.role,
-                        "content": user_msg.content,
-                        "created_at": user_msg.created_at.isoformat() if user_msg.created_at else "",
-                        "importance_score": 0.0
-                    })
-                elif history.user_message_id:
-                    # 从数据库查询
-                    user_msg = db.query(ChatMessage).filter(
-                        ChatMessage.id == history.user_message_id
-                    ).first()
-                    if user_msg:
-                        messages.append({
-                            "role": user_msg.role,
-                            "content": user_msg.content,
-                            "created_at": user_msg.created_at.isoformat() if user_msg.created_at else "",
-                            "importance_score": 0.0
-                        })
-                
-                # 获取助手消息
-                if hasattr(history, 'assistant_message') and history.assistant_message:
-                    assistant_msg = history.assistant_message
-                    messages.append({
-                        "role": assistant_msg.role,
-                        "content": assistant_msg.content,
-                        "created_at": assistant_msg.created_at.isoformat() if assistant_msg.created_at else "",
-                        "importance_score": 0.0
-                    })
-                elif history.assistant_message_id:
-                    # 从数据库查询
-                    assistant_msg = db.query(ChatMessage).filter(
-                        ChatMessage.id == history.assistant_message_id
-                    ).first()
-                    if assistant_msg:
-                        messages.append({
-                            "role": assistant_msg.role,
-                            "content": assistant_msg.content,
-                            "created_at": assistant_msg.created_at.isoformat() if assistant_msg.created_at else "",
-                            "importance_score": 0.0
-                        })
+                if history.user_message_id:
+                    message_ids.append(history.user_message_id)
+                if history.assistant_message_id:
+                    message_ids.append(history.assistant_message_id)
             
-            # 如果从 ChatHistory 关系对象没有获取到消息，回退到直接从 ChatMessage 表读取
+            messages = []
+            if message_ids:
+                # 批量查询所有消息
+                chat_messages = db.query(ChatMessage).filter(
+                    ChatMessage.id.in_(message_ids)
+                ).order_by(ChatMessage.created_at.asc()).all()
+                
+                messages = [{
+                    "role": msg.role,
+                    "content": msg.content,
+                    "created_at": msg.created_at.isoformat() if msg.created_at else "",
+                    "importance_score": 0.0
+                } for msg in chat_messages]
+            
+            # 如果从 ChatHistory ID 没有获取到消息，回退到直接从 ChatMessage 表读取
             if not messages:
                 logger.warning("从 ChatHistory 关系对象未获取到消息，回退到直接查询 ChatMessage 表")
                 chat_session = db.query(ChatSession).filter(
@@ -472,6 +473,8 @@ async def generate_summary_plan(
         plan_content = await generate_plan_content(top_messages, model)
         
         # 6. 上传到 OSS 存储
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"plan_summary_{session_id}_{timestamp}.md"
         object_name, download_url = await upload_plan_to_storage(plan_content, session_id)
         
         logger.info(f"✓ 方案总结生成完成: session_id={session_id}, object={object_name}")
@@ -480,7 +483,9 @@ async def generate_summary_plan(
             "success": True,
             "object_name": object_name,
             "download_url": download_url,
+            "file_name": filename,
             "plan_content": plan_content[:500] + "..." if len(plan_content) > 500 else plan_content,  # 返回前500字符预览
+            "plan_content_full": plan_content,  # 返回完整内容
             "messages_used": len(top_messages),
             "total_messages": len(messages)
         }

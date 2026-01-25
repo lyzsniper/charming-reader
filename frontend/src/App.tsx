@@ -3,6 +3,7 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { LoadingSpinner } from './components/common/LoadingSpinner';
 import { Toaster } from './components/ui/toast-sonner';
 import { Sidebar } from './components/layout/Sidebar';
+import { SettingsModal } from './components/layout/SettingsModal';
 import { KeyboardShortcutsModal } from './components/common/KeyboardShortcutsModal';
 import { useKeyboardShortcuts, COMMON_SHORTCUTS } from './hooks/useKeyboardShortcuts';
 import { ThemeProvider } from './hooks/useTheme';
@@ -22,14 +23,20 @@ function App() {
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isModelsOpen, setIsModelsOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
-  const handleStartChat = (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string) => {
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [useMultiAgent, setUseMultiAgent] = useState<boolean>(false);
+
+  const handleStartChat = (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string, modelId?: string | null, multiAgent?: boolean) => {
     setInitialMessage(message ?? null);
     setCurrentFile(file ?? null);
     setSelectedKnowledgeBaseIds(knowledgeBaseIds ?? []);
     setSelectedSessionId(sessionId ?? null);
+    setSelectedModelId(modelId ?? null);
+    setUseMultiAgent(multiAgent ?? false);
     setViewMode('workspace');
     setConversationKey((key) => key + 1);
   };
@@ -39,11 +46,27 @@ function App() {
     setIsKnowledgeOpen(false);
     setIsHistoryOpen(false);
     setIsSettingsOpen(false);
+    setIsModelsOpen(false);
     // 切换到首页
     setViewMode('home');
     setCurrentFile(null);
     setInitialMessage(null);
     setSelectedSessionId(null);
+  };
+
+  const handleOpenModels = () => {
+    if (isModelsOpen) {
+      setIsModelsOpen(false);
+    } else {
+      // 确保关闭其他面板
+      if (isKnowledgeOpen) setIsKnowledgeOpen(false);
+      if (isHistoryOpen) setIsHistoryOpen(false);
+      if (isSettingsOpen) setIsSettingsOpen(false);
+      if (viewMode !== 'workspace') {
+        setViewMode('workspace');
+      }
+      setIsModelsOpen(true);
+    }
   };
 
   const handleOpenKnowledge = () => {
@@ -95,6 +118,7 @@ function App() {
         if (isKnowledgeOpen) setIsKnowledgeOpen(false);
         if (isHistoryOpen) setIsHistoryOpen(false);
         if (isSettingsOpen) setIsSettingsOpen(false);
+        if (isModelsOpen) setIsModelsOpen(false);
       },
     },
   ]);
@@ -115,13 +139,16 @@ function App() {
                 // 关闭其他面板
                 if (isKnowledgeOpen) setIsKnowledgeOpen(false);
                 if (isHistoryOpen) setIsHistoryOpen(false);
+                if (isModelsOpen) setIsModelsOpen(false);
                 setIsSettingsOpen(true);
               }
             }}
+            onOpenModels={handleOpenModels}
             onGoHome={handleGoHome}
             isKnowledgeOpen={isKnowledgeOpen}
             isHistoryOpen={isHistoryOpen}
             isSettingsOpen={isSettingsOpen}
+            isModelsOpen={isModelsOpen}
             viewMode={viewMode}
           />
           
@@ -145,14 +172,22 @@ function App() {
               onKnowledgeClose={() => setIsKnowledgeOpen(false)}
               initialKnowledgeBaseIds={selectedKnowledgeBaseIds}
               initialSessionId={selectedSessionId}
+              initialModelId={selectedModelId}
+              initialUseMultiAgent={useMultiAgent}
               isHistoryOpen={isHistoryOpen}
               onHistoryClose={() => setIsHistoryOpen(false)}
+              isModelsOpen={isModelsOpen}
+              onModelsClose={() => setIsModelsOpen(false)}
             />
               )}
             </Suspense>
           </div>
         </div>
         <Toaster />
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+        />
         <KeyboardShortcutsModal
           isOpen={isShortcutsOpen}
           onClose={() => setIsShortcutsOpen(false)}

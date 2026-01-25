@@ -111,6 +111,7 @@ interface MarkdownRendererProps {
   className?: string;
   onCitationClick?: (id: string) => void;
   citationEventName?: string;
+  onPreviewClick?: (data: { content: string; fileType: string; fileName: string; downloadUrl?: string }) => void;
 }
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
@@ -118,6 +119,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   className,
   onCitationClick,
   citationEventName,
+  onPreviewClick,
 }) => {
   return (
     <div className={cn("markdown-content", className)}>
@@ -181,6 +183,35 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                 {id}
               </button>
             );
+            }
+            // 处理预览链接 #preview:{json_encoded_data}
+            if (href?.startsWith('#preview:')) {
+              try {
+                const encodedData = href.replace('#preview:', '');
+                const previewData = JSON.parse(decodeURIComponent(encodedData));
+                if (previewData && previewData.content) {
+                  return (
+                    <button
+                      className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 hover:underline font-medium transition-colors cursor-pointer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (onPreviewClick) {
+                          onPreviewClick({
+                            content: previewData.content,
+                            fileType: previewData.fileType || 'markdown',
+                            fileName: previewData.fileName || '方案文档.md',
+                            downloadUrl: previewData.downloadUrl,
+                          });
+                        }
+                      }}
+                      {...props}
+                    />
+                  );
+                }
+              } catch (error) {
+                console.error('解析预览链接失败:', error);
+                // 如果解析失败，回退到普通链接
+              }
             }
             return (
               <a

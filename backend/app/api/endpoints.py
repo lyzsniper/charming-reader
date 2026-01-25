@@ -19,6 +19,12 @@ from agents.education_agent import create_agent as create_education_agent
 from agents.research_management_agent import create_agent as create_research_management_agent
 from agents.industry_application_agent import create_agent as create_industry_application_agent
 from agents.academic_publishing_agent import create_agent as create_academic_publishing_agent
+from agents.coordinator_agent import create_coordinator_agent
+from agents.a2a_service import (
+    initialize_agents,
+    get_registered_agents,
+    call_agent
+)
 from services.ingestion import process_pdf
 from services.vectorization_service import VectorizationService
 from services.storage_service import get_storage_service
@@ -57,15 +63,99 @@ from models.schemas import (
     ChatSessionResponse,
     ChatMessageResponse,
     ChatHistoryResponse,
-    ChatHistoryDetailResponse
+    ChatHistoryDetailResponse,
+    ChatAttachmentCreate,
+    ChatAttachmentResponse
 )
-from models.sql import Session as DBSessionModel, SessionMessage, ChatSession, ChatMessage, ChatHistory
+from models.sql import Session as DBSessionModel, SessionMessage, ChatSession, ChatMessage, ChatHistory, ChatAttachment
 from services.chat_service import ChatService
 
 # 创建日志记录器
 logger = LoggerFactory.get_api_logger(__name__)
 
 router = APIRouter()
+
+# ===== 任务管理器：用于跟踪和中断流式任务 =====
+class TaskManager:
+    """管理正在运行的流式任务，支持中断"""
+    def __init__(self):
+        self._tasks: Dict[str, Dict[str, Any]] = {}  # {task_id: {task, cancelled, session_id}}
+        self._lock = asyncio.Lock()
+    
+    async def register_task(self, task_id: str, task: asyncio.Task, session_id: Optional[str] = None):
+        """注册一个任务"""
+        async with self._lock:
+            self._tasks[task_id] = {
+                "task": task,
+                "cancelled": False,
+                "session_id": session_id
+            }
+            logger.info(f"✓ 注册任务: task_id={task_id}, session_id={session_id}")
+    
+    async def cancel_task(self, task_id: str) -> bool:
+        """取消一个任务"""
+        async with self._lock:
+            if task_id not in self._tasks:
+                logger.warning(f"任务不存在: task_id={task_id}")
+                return False
+            
+            task_info = self._tasks[task_id]
+            if task_info["cancelled"]:
+                logger.info(f"任务已被取消: task_id={task_id}")
+                return True
+            
+            task_info["cancelled"] = True
+            task = task_info["task"]
+            
+            # 取消任务
+            if not task.done():
+                task.cancel()
+                logger.info(f"✓ 已取消任务: task_id={task_id}")
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info(f"✓ 任务已成功取消: task_id={task_id}")
+                except Exception as e:
+                    logger.warning(f"取消任务时出现异常: {e}")
+            
+            return True
+    
+    async def cancel_by_session(self, session_id: str) -> int:
+        """根据 session_id 取消所有相关任务"""
+        async with self._lock:
+            cancelled_count = 0
+            for task_id, task_info in list(self._tasks.items()):
+                if task_info["session_id"] == session_id and not task_info["cancelled"]:
+                    task_info["cancelled"] = True
+                    task = task_info["task"]
+                    if not task.done():
+                        task.cancel()
+                        cancelled_count += 1
+                        logger.info(f"✓ 已取消任务: task_id={task_id}, session_id={session_id}")
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logger.warning(f"取消任务时出现异常: {e}")
+            return cancelled_count
+    
+    async def is_cancelled(self, task_id: str) -> bool:
+        """检查任务是否已被取消"""
+        async with self._lock:
+            if task_id not in self._tasks:
+                return False
+            return self._tasks[task_id]["cancelled"]
+    
+    async def unregister_task(self, task_id: str):
+        """注销一个任务"""
+        async with self._lock:
+            if task_id in self._tasks:
+                del self._tasks[task_id]
+                logger.debug(f"✓ 注销任务: task_id={task_id}")
+
+# 全局任务管理器实例
+task_manager = TaskManager()
 
 # 简单的扩展名到 MIME 映射（用于缺省 content_type）
 EXTENSION_CONTENT_TYPE = {
@@ -103,22 +193,35 @@ async def _chat_stream(
     use_rag: bool = False,
     rag_top_k: int = 5,
     enable_rerank: bool = True,
-    model_id: Optional[UUID] = None
+    model_id: Optional[UUID] = None,
+    use_multi_agent: bool = False
 ) -> AsyncGenerator[str, None]:
     """处理无文件的聊天请求（流式响应）"""
+    # 生成任务ID
+    task_id = str(uuid4())
     event_queue = asyncio.Queue()
     done = asyncio.Event()
     error_occurred = None
     final_result = None
+    cancelled = False
     
     async def yield_event(event_type: str, event_data: Dict[str, Any]):
         """事件回调函数"""
+        # 检查是否已取消
+        if await task_manager.is_cancelled(task_id):
+            return
         await event_queue.put((event_type, event_data))
     
     async def run_agent_task():
         """在后台任务中运行agent"""
-        nonlocal error_occurred, final_result
+        nonlocal error_occurred, final_result, cancelled
         try:
+            # 检查是否已取消
+            if await task_manager.is_cancelled(task_id):
+                cancelled = True
+                logger.info(f"任务在启动前已被取消: task_id={task_id}")
+                return
+            
             result = await run_agent_with_rag_stream(
                 input_text=message,
                 user_id=user_id,
@@ -129,11 +232,18 @@ async def _chat_stream(
                 enable_rerank=enable_rerank,
                 yield_event=yield_event,
                 model_id=model_id,
-                db=db
+                db=db,
+                use_multi_agent=use_multi_agent,
+                cancellation_flag=lambda: task_manager.is_cancelled(task_id)
             )
             final_result = result
+        except asyncio.CancelledError:
+            cancelled = True
+            logger.info(f"✓ 任务已被取消: task_id={task_id}")
+            raise
         except Exception as e:
-            error_occurred = e
+            if not cancelled:
+                error_occurred = e
         finally:
             done.set()
     
@@ -141,8 +251,24 @@ async def _chat_stream(
         # 启动agent任务
         agent_task = asyncio.create_task(run_agent_task())
         
+        # 注册任务到管理器
+        await task_manager.register_task(task_id, agent_task, session_id)
+        
         # 流式发送事件
         while True:
+            # 检查是否已取消
+            if await task_manager.is_cancelled(task_id):
+                cancelled = True
+                logger.info(f"检测到任务已取消，停止流式输出: task_id={task_id}")
+                # 取消任务
+                if not agent_task.done():
+                    agent_task.cancel()
+                yield _format_sse_event("cancelled", {
+                    "message": "对话已中断",
+                    "task_id": task_id
+                })
+                break
+            
             # 优先处理队列中的事件
             try:
                 # 使用 get_nowait 非阻塞获取事件
@@ -172,15 +298,20 @@ async def _chat_stream(
             # 等待一小段时间，避免CPU占用过高
             await asyncio.sleep(0.01)
         
-        # 等待agent任务完成
-        await agent_task
+        # 等待agent任务完成（如果还没完成）
+        if not agent_task.done():
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                cancelled = True
+                logger.info(f"✓ 任务已成功取消: task_id={task_id}")
         
-        # 检查是否有错误
-        if error_occurred:
+        # 检查是否有错误（且不是取消错误）
+        if error_occurred and not cancelled:
             raise error_occurred
         
-        # 发送完成事件
-        if final_result:
+        # 发送完成事件（如果没有被取消）
+        if final_result and not cancelled:
             response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = final_result
             yield _format_sse_event("agent_complete", {
                 "session_id": actual_session_id,
@@ -194,11 +325,22 @@ async def _chat_stream(
                 "created_at": datetime.now().isoformat()
             })
         
-    except Exception as e:
-        logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {str(e)}", exc_info=True)
-        yield _format_sse_event("error", {
-            "error": f"处理失败: {str(e)}"
+    except asyncio.CancelledError:
+        cancelled = True
+        logger.info(f"✓ 流式响应已取消: task_id={task_id}")
+        yield _format_sse_event("cancelled", {
+            "message": "对话已中断",
+            "task_id": task_id
         })
+    except Exception as e:
+        if not cancelled:
+            logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {str(e)}", exc_info=True)
+            yield _format_sse_event("error", {
+                "error": f"处理失败: {str(e)}"
+            })
+    finally:
+        # 注销任务
+        await task_manager.unregister_task(task_id)
 
 async def _chat_with_file_stream(
     file: UploadFile,
@@ -210,8 +352,11 @@ async def _chat_with_file_stream(
     use_rag: bool = False
 ) -> AsyncGenerator[str, None]:
     """处理带文件上传的聊天请求（流式响应）"""
+    # 生成任务ID
+    task_id = str(uuid4())
     temp_file_path = None
     document_id = None
+    cancelled = False
     
     try:
         # 1. 自动创建 session_id（如果未提供）
@@ -363,12 +508,21 @@ async def _chat_with_file_stream(
         
         async def yield_event(event_type: str, event_data: Dict[str, Any]):
             """事件回调函数"""
+            # 检查是否已取消
+            if await task_manager.is_cancelled(task_id):
+                return
             await event_queue.put((event_type, event_data))
         
         async def run_agent_task():
             """在后台任务中运行agent"""
-            nonlocal error_occurred, final_result
+            nonlocal error_occurred, final_result, cancelled
             try:
+                # 检查是否已取消
+                if await task_manager.is_cancelled(task_id):
+                    cancelled = True
+                    logger.info(f"任务在启动前已被取消: task_id={task_id}")
+                    return
+                
                 result = await run_agent_with_rag_stream(
                     input_text=message,
                     user_id=user_id,
@@ -378,19 +532,40 @@ async def _chat_with_file_stream(
                     rag_top_k=5,
                     enable_rerank=True,
                     session_id_for_temp_files=session_id if not kb_ids_final else None,
-                    yield_event=yield_event
+                    yield_event=yield_event,
+                    cancellation_flag=lambda: task_manager.is_cancelled(task_id)
                 )
                 final_result = result
+            except asyncio.CancelledError:
+                cancelled = True
+                logger.info(f"✓ 任务已被取消: task_id={task_id}")
+                raise
             except Exception as e:
-                error_occurred = e
+                if not cancelled:
+                    error_occurred = e
             finally:
                 done.set()
         
         # 启动agent任务
         agent_task = asyncio.create_task(run_agent_task())
         
+        # 注册任务到管理器
+        await task_manager.register_task(task_id, agent_task, session_id)
+        
         # 流式发送事件
         while True:
+            # 检查是否已取消
+            if await task_manager.is_cancelled(task_id):
+                cancelled = True
+                logger.info(f"检测到任务已取消，停止流式输出: task_id={task_id}")
+                # 取消任务
+                if not agent_task.done():
+                    agent_task.cancel()
+                yield _format_sse_event("cancelled", {
+                    "message": "对话已中断",
+                    "task_id": task_id
+                })
+                break
             # 优先处理队列中的事件
             try:
                 # 使用 get_nowait 非阻塞获取事件
@@ -420,15 +595,20 @@ async def _chat_with_file_stream(
             # 等待一小段时间，避免CPU占用过高
             await asyncio.sleep(0.01)
         
-        # 等待agent任务完成
-        await agent_task
+        # 等待agent任务完成（如果还没完成）
+        if not agent_task.done():
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                cancelled = True
+                logger.info(f"✓ 任务已成功取消: task_id={task_id}")
         
-        # 检查是否有错误
-        if error_occurred:
+        # 检查是否有错误（且不是取消错误）
+        if error_occurred and not cancelled:
             raise error_occurred
         
-        # 发送完成事件
-        if final_result:
+        # 发送完成事件（如果没有被取消）
+        if final_result and not cancelled:
             response_text, actual_session_id, rag_sources, activated_skills, skills_prompt = final_result
             yield _format_sse_event("agent_complete", {
                 "session_id": actual_session_id,
@@ -442,12 +622,22 @@ async def _chat_with_file_stream(
                 "created_at": datetime.now().isoformat()
             })
         
-    except Exception as e:
-        logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {str(e)}", exc_info=True)
-        yield _format_sse_event("error", {
-            "error": f"处理失败: {str(e)}"
+    except asyncio.CancelledError:
+        cancelled = True
+        logger.info(f"✓ 流式响应已取消: task_id={task_id}")
+        yield _format_sse_event("cancelled", {
+            "message": "对话已中断",
+            "task_id": task_id
         })
+    except Exception as e:
+        if not cancelled:
+            logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {str(e)}", exc_info=True)
+            yield _format_sse_event("error", {
+                "error": f"处理失败: {str(e)}"
+            })
     finally:
+        # 注销任务
+        await task_manager.unregister_task(task_id)
         # 清理临时文件
         if temp_file_path and os.path.exists(temp_file_path):
             try:
@@ -528,7 +718,8 @@ async def chat(
                 use_rag=req.use_rag,
                 rag_top_k=req.rag_top_k,
                 enable_rerank=req.enable_rerank,
-                model_id=req.model_id
+                model_id=req.model_id,
+                use_multi_agent=req.use_multi_agent or False
             ),
             media_type="text/event-stream",
             headers={
@@ -553,6 +744,35 @@ async def chat(
         logger.error(f"❌ 聊天请求失败: {type(e).__name__}: {error_msg}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"聊天请求失败: {error_msg}")
 
+@router.post("/chat/cancel")
+async def cancel_chat(
+    session_id: Optional[str] = Query(None, description="会话ID，用于取消该会话的所有任务"),
+    db: Session = Depends(get_db)
+):
+    """
+    中断正在进行的对话任务
+    
+    功能特性:
+    - 如果提供 session_id，将取消该会话的所有正在运行的任务
+    - 彻底断开流式响应和后端处理
+    """
+    try:
+        if session_id:
+            cancelled_count = await task_manager.cancel_by_session(session_id)
+            logger.info(f"✓ 已取消会话 {session_id} 的 {cancelled_count} 个任务")
+            return {
+                "success": True,
+                "message": f"已取消 {cancelled_count} 个任务",
+                "session_id": session_id,
+                "cancelled_count": cancelled_count
+            }
+        else:
+            raise HTTPException(status_code=400, detail="必须提供 session_id")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 取消任务失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"取消任务失败: {str(e)}")
 
 @router.post("/chat/form", response_model=ChatResponse)
 async def chat_form(
@@ -1811,14 +2031,45 @@ async def generate_summary_plan(
                 detail=result.get("error", "生成方案失败")
             )
         
+        # 保存附件记录到数据库
+        try:
+            attachment = ChatAttachment(
+                session_id=chat_session.id,
+                message_id=None,  # 稍后可以通过消息ID关联
+                attachment_type="summary",
+                file_name=result.get("file_name", ""),
+                file_type="markdown",
+                file_size=len(result.get("plan_content_full", "").encode('utf-8')),
+                storage_object_name=result.get("object_name"),
+                download_url=result.get("download_url"),
+                preview_url=None,
+                description=f"从 {result.get('total_messages', 0)} 条消息中筛选出 {result.get('messages_used', 0)} 条重要消息生成的方案总结",
+                attachment_metadata={
+                    "messages_used": result.get("messages_used", 0),
+                    "total_messages": result.get("total_messages", 0),
+                    "plan_content_preview": result.get("plan_content", "")[:500]  # 保存预览内容
+                }
+            )
+            db.add(attachment)
+            db.commit()
+            db.refresh(attachment)
+            logger.info(f"✓ 保存附件记录: attachment_id={attachment.id}, file_name={attachment.file_name}")
+        except Exception as e:
+            logger.error(f"✗ 保存附件记录失败: {type(e).__name__}: {str(e)}", exc_info=True)
+            # 不抛出异常，避免影响主流程
+        
         return {
             "success": True,
             "data": {
                 "object_name": result.get("object_name"),
                 "download_url": result.get("download_url"),
                 "plan_content": result.get("plan_content", ""),
+                "plan_content_full": result.get("plan_content_full", ""),  # 完整内容（用于预览）
+                "file_name": result.get("file_name", ""),  # 文件名
+                "file_type": "markdown",  # 文件类型
                 "messages_used": result.get("messages_used", 0),
-                "total_messages": result.get("total_messages", 0)
+                "total_messages": result.get("total_messages", 0),
+                "attachment_id": str(attachment.id) if 'attachment' in locals() else None  # 附件ID
             }
         }
         
@@ -1943,6 +2194,36 @@ async def get_chat_history(
                 if assistant_msg:
                     history_dict["assistant_message"] = ChatMessageResponse.model_validate(assistant_msg).model_dump()
             
+            # 加载该轮次相关的附件（通过消息ID关联）
+            message_ids = []
+            if history.user_message_id:
+                message_ids.append(history.user_message_id)
+            if history.assistant_message_id:
+                message_ids.append(history.assistant_message_id)
+            
+            attachments = []
+            if message_ids:
+                attachments = db.query(ChatAttachment).filter(
+                    ChatAttachment.session_id == chat_session.id,
+                    ChatAttachment.message_id.in_(message_ids)
+                ).all()
+            
+            # 如果没有通过消息ID找到附件，尝试查找该会话的所有附件（按时间排序，取最近的）
+            if not attachments:
+                # 查找该会话的所有附件，按创建时间排序
+                all_attachments = db.query(ChatAttachment).filter(
+                    ChatAttachment.session_id == chat_session.id
+                ).order_by(ChatAttachment.created_at.desc()).all()
+                
+                # 如果附件创建时间在该轮次之后，认为是相关的
+                if all_attachments and history.created_at:
+                    for att in all_attachments:
+                        if att.created_at and att.created_at >= history.created_at:
+                            attachments.append(att)
+                            break  # 只取最近的一个
+            
+            history_dict["attachments"] = [ChatAttachmentResponse.model_validate(att).model_dump() for att in attachments] if attachments else None
+            
             result.append(ChatHistoryDetailResponse.model_validate(history_dict))
         
         return result
@@ -1951,3 +2232,241 @@ async def get_chat_history(
     except Exception as e:
         logger.error(f"获取Chat历史记录失败: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/chat/sessions/{session_id}/attachments", response_model=List[ChatAttachmentResponse])
+async def get_chat_attachments(
+    session_id: str,
+    attachment_type: Optional[str] = Query(None, description="过滤附件类型：'upload'、'generated'、'summary' 等"),
+    db: Session = Depends(get_db)
+):
+    """
+    获取Chat会话的附件列表
+    """
+    try:
+        chat_session = db.query(ChatSession).filter(
+            ChatSession.session_id == session_id
+        ).first()
+        
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        
+        query = db.query(ChatAttachment).filter(
+            ChatAttachment.session_id == chat_session.id
+        )
+        
+        if attachment_type:
+            query = query.filter(ChatAttachment.attachment_type == attachment_type)
+        
+        attachments = query.order_by(ChatAttachment.created_at.desc()).all()
+        
+        return [ChatAttachmentResponse.model_validate(att) for att in attachments]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取Chat附件列表失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/agents/list")
+async def list_agents():
+    """
+    列出所有可用的智能体
+    """
+    try:
+        # 确保智能体已初始化
+        await initialize_agents()
+        
+        agents = get_registered_agents()
+        agent_descriptions = {
+            "experiment_replication": "实验复现助手：从论文中提取实验配置并生成可执行代码",
+            "paper_writing": "论文写作助手：辅助撰写学术论文，包括大纲生成、段落润色、审稿意见响应",
+            "research_trends": "研究趋势分析：分析领域最新动态和发展趋势，预测未来研究方向",
+            "cross_domain": "跨领域知识关联：发现不同领域间的知识联系，促进跨领域创新",
+            "patent_analysis": "专利分析：评估学术成果的专利转化潜力，协助专利相关任务",
+            "tech_transfer": "技术转移助手：将学术研究转化为产业应用，制定商业化路径",
+            "paper_agent": "论文智能体：通用学术研究助手，用于论文分析和知识检索"
+        }
+        
+        agent_list = [
+            {
+                "name": agent_name,
+                "description": agent_descriptions.get(agent_name, f"{agent_name} 智能体")
+            }
+            for agent_name in agents
+        ]
+        
+        return {
+            "success": True,
+            "agents": agent_list,
+            "count": len(agent_list)
+        }
+    except Exception as e:
+        logger.error(f"获取智能体列表失败: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/agents/coordinator")
+async def chat_with_coordinator(
+    request_obj: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    使用协调智能体进行多智能体协作对话
+    
+    功能特性：
+    - 自动任务分解：复杂任务自动分解为多个子任务
+    - 智能体选择：自动选择最合适的智能体执行任务
+    - 结果合成：整合多个智能体的输出
+    - SSE流式响应：实时显示任务执行状态
+    """
+    content_type = request_obj.headers.get("content-type", "")
+    
+    # 解析请求参数
+    if "application/json" in content_type:
+        try:
+            body = await request_obj.json()
+            req = ChatRequest(**body)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported Content-Type. Use application/json")
+    
+    logger.info("=" * 80)
+    logger.info(f"收到协调智能体请求: message={req.message[:100]}...")
+    logger.info(f"参数: session_id={req.session_id}, user_id={req.user_id}")
+    logger.info("=" * 80)
+    
+    try:
+        # 自动创建 session_id（如果未提供）
+        session_id = req.session_id or str(uuid4())
+        user_id = req.user_id or "default_user"
+        
+        # 创建协调智能体
+        coordinator_agent = await create_coordinator_agent()
+        
+        # 使用现有的流式响应逻辑（暂时使用默认的paper_agent流程，后续可以优化为直接使用coordinator_agent）
+        # 注意：由于_chat_stream和run_agent_with_rag_stream的架构，暂时通过message来触发协调智能体的逻辑
+        # 更好的方案是修改flow.py以支持传入自定义agent
+        return StreamingResponse(
+            _chat_stream(
+                message=f"[COORDINATOR_MODE] {req.message}",  # 添加标记以标识使用协调模式
+                session_id=session_id,
+                user_id=user_id,
+                db=db,
+                knowledge_base_ids=req.knowledge_base_ids,
+                use_rag=req.use_rag,
+                rag_top_k=req.rag_top_k or 5,
+                enable_rerank=req.enable_rerank if req.enable_rerank is not None else True,
+                model_id=req.model_id
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        try:
+            if isinstance(error_msg, bytes):
+                error_msg = error_msg.decode('utf-8', errors='replace')
+            else:
+                error_msg = str(error_msg).encode('utf-8', errors='replace').decode('utf-8')
+        except Exception:
+            error_msg = "An error occurred while processing the request"
+        
+        logger.error(f"❌ 协调智能体请求失败: {type(e).__name__}: {error_msg}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"协调智能体请求失败: {error_msg}")
+
+
+@router.post("/agents/{agent_name}")
+async def call_specific_agent(
+    agent_name: str,
+    request_obj: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    直接调用指定的智能体
+    
+    Args:
+        agent_name: 智能体名称（experiment_replication, paper_writing, research_trends, cross_domain, patent_analysis, tech_transfer, paper_agent）
+    """
+    content_type = request_obj.headers.get("content-type", "")
+    
+    # 解析请求参数
+    if "application/json" in content_type:
+        try:
+            body = await request_obj.json()
+            req = ChatRequest(**body)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported Content-Type. Use application/json")
+    
+    logger.info(f"收到直接调用智能体请求: agent_name={agent_name}, message={req.message[:100]}...")
+    
+    try:
+        # 确保智能体已初始化
+        await initialize_agents()
+        
+        # 检查智能体是否存在
+        registered_agents = get_registered_agents()
+        if agent_name not in registered_agents:
+            raise HTTPException(
+                status_code=404,
+                detail=f"智能体 '{agent_name}' 不存在。可用智能体: {registered_agents}"
+            )
+        
+        # 调用指定智能体
+        session_id = req.session_id or f"{agent_name}_{uuid4()}"
+        user_id = req.user_id or "default_user"
+        
+        response = await call_agent(
+            agent_name=agent_name,
+            message=req.message,
+            user_id=user_id,
+            session_id=session_id
+        )
+        
+        # 保存对话记录（如果提供了session_id）
+        if req.session_id:
+            try:
+                from services.chat_service import ChatService
+                await ChatService.create_or_get_chat_session(
+                    session_id=req.session_id,
+                    user_id=user_id
+                )
+                
+                await ChatService.save_message(
+                    session_id=req.session_id,
+                    role="user",
+                    message_type="user_message",
+                    content=req.message,
+                    user_id=user_id
+                )
+                
+                await ChatService.save_message(
+                    session_id=req.session_id,
+                    role="assistant",
+                    message_type="assistant_message",
+                    content=response,
+                    user_id=user_id
+                )
+            except Exception as e:
+                logger.warning(f"保存对话记录失败（不影响主流程）: {e}")
+        
+        return ChatResponse(
+            message=response,
+            session_id=session_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"❌ 调用智能体失败: {type(e).__name__}: {error_msg}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"调用智能体失败: {error_msg}")

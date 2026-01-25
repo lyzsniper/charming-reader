@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "paperagent123")
     MINIO_BUCKET: str = os.getenv("MINIO_BUCKET", "paperagent-files")
     MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"  # HTTP by default
+    # MinIO 公网访问地址（用于生成可访问的下载链接）
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = os.getenv("MINIO_PUBLIC_ENDPOINT", None)  # 例如: "192.168.1.100:39000" 或 "example.com"
 
     # API Keys
     OPENAI_API_KEY: Optional[str] = None
