@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { showError } from '@/utils/dialogs';
+import { agentSkillsApi } from '@/services/agentSkillsApi';
+import type { AgentConfigResponse } from '@/services/agentSkillsApi';
 import { KnowledgeBaseSelector } from '@/components/common/KnowledgeBaseSelector';
 import { ModelSelector } from '@/components/common/ModelSelector';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -11,18 +13,36 @@ import { api } from '@/services/api';
 import type { SessionHistoryItem } from '@/services/api';
 
 interface HomeViewProps {
-  onStartChat: (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string, modelId?: string | null, useMultiAgent?: boolean) => void;
+  onStartChat: (
+    message?: string,
+    file?: File,
+    knowledgeBaseIds?: string[],
+    sessionId?: string,
+    modelId?: string | null,
+    useMultiAgent?: boolean,
+    agentConfigId?: string | null
+  ) => void;
+  selectedAgentConfigId?: string | null;
+  onAgentConfigChange?: (agentConfigId: string | null) => void;
   onOpenKnowledge?: () => void;
   isHistoryOpen?: boolean;
   onHistoryClose?: () => void;
 }
 
-export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge, isHistoryOpen, onHistoryClose }) => {
+export const HomeView: React.FC<HomeViewProps> = ({
+  onStartChat,
+  selectedAgentConfigId,
+  onAgentConfigChange,
+  onOpenKnowledge,
+  isHistoryOpen,
+  onHistoryClose,
+}) => {
   const [isDragging, setIsDragging] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [useMultiAgent, setUseMultiAgent] = useState<boolean>(false);
+  const [agentOptions, setAgentOptions] = useState<AgentConfigResponse[]>([]);
   const [sessions, setSessions] = useState<SessionHistoryItem[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -43,6 +63,31 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
     };
     void loadSessions();
   }, [isHistoryOpen]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadAgents = async () => {
+      try {
+        const response = await agentSkillsApi.listAgentConfigs({
+          skip: 0,
+          limit: 100,
+          include_total: false,
+        });
+        const items = Array.isArray(response) ? response : response.items || [];
+        if (mounted) {
+          setAgentOptions(items);
+        }
+      } catch (error) {
+        if (mounted) {
+          showError('加载 Agent 列表失败');
+        }
+      }
+    };
+    loadAgents();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -65,13 +110,29 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
 
   const handleFileUpload = (file: File) => {
     // 允许所有文件类型上传到对话中
-    onStartChat("", file, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined, undefined, selectedModelId, useMultiAgent);
+    onStartChat(
+      "",
+      file,
+      selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined,
+      undefined,
+      selectedModelId,
+      useMultiAgent,
+      selectedAgentConfigId ?? null
+    );
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (inputValue.trim()) {
-      onStartChat(inputValue, undefined, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined, undefined, selectedModelId, useMultiAgent);
+      onStartChat(
+        inputValue,
+        undefined,
+        selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined,
+        undefined,
+        selectedModelId,
+        useMultiAgent,
+        selectedAgentConfigId ?? null
+      );
     }
   };
 
@@ -189,7 +250,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
               />
               
               <div className="flex justify-between items-center px-2 pb-1 pointer-events-auto">
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }}>
                     <Button
                       type="button"
@@ -282,6 +343,33 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
           />
         </motion.div>
 
+        <motion.div
+          initial={{ y: 10, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.5, delay: 0.45 }}
+          className="flex justify-center"
+        >
+          <div className="flex items-center gap-2 bg-white/70 border border-gray-200/60 rounded-full px-4 py-2 shadow-sm">
+            <span className="text-xs text-gray-500">Agent 工具组</span>
+            <select
+              value={selectedAgentConfigId ?? ''}
+              onChange={(event) => {
+                const value = event.target.value || null;
+                onAgentConfigChange?.(value);
+              }}
+              className="h-8 px-2 rounded-md border border-gray-200 bg-white text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="选择 Agent 工具组"
+            >
+              <option value="">默认Agent工具组</option>
+              {agentOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.display_name || agent.name || agent.id}
+                </option>
+              ))}
+            </select>
+          </div>
+        </motion.div>
+
         {/* Pills */}
         <motion.div 
           initial={{ y: 10, opacity: 0 }}
@@ -297,7 +385,17 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartChat, onOpenKnowledge
               transition={{ duration: 0.3, delay: 0.6 + i * 0.1 }}
               whileHover={{ scale: 1.05, y: -2 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => onStartChat(action.text, undefined, selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined, undefined, selectedModelId, useMultiAgent)}
+              onClick={() =>
+                onStartChat(
+                  action.text,
+                  undefined,
+                  selectedKnowledgeBaseIds.length > 0 ? selectedKnowledgeBaseIds : undefined,
+                  undefined,
+                  selectedModelId,
+                  useMultiAgent,
+                  selectedAgentConfigId ?? null
+                )
+              }
               className="flex items-center gap-2 px-4 py-2 bg-white/70 hover:bg-white/90 backdrop-blur-sm border border-gray-200/50 rounded-full text-sm text-gray-700 hover:text-black transition-all shadow-md hover:shadow-lg hover:border-gray-300/50"
             >
               {action.icon}

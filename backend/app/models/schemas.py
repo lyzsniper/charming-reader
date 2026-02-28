@@ -143,6 +143,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动创建新会话")
     user_id: Optional[str] = Field("default_user", description="用户ID")
     model_id: Optional[UUID] = Field(None, description="模型配置ID，不传则使用当前激活的模型")
+    agent_config_id: Optional[UUID] = Field(None, description="Agent配置ID，用于指定工具组")
     knowledge_base_ids: Optional[List[UUID]] = Field(None, description="知识库ID列表，选择后启用RAG检索")
     use_rag: bool = Field(False, description="是否启用RAG问答（有知识库时自动为True）")
     rag_top_k: int = Field(5, ge=1, le=20, description="RAG检索数量")
@@ -328,3 +329,144 @@ class LanguageDetectionResponse(BaseModel):
     detected_language: Optional[str] = Field(None, description="检测到的语言代码")
     provider: str = Field(..., description="使用的翻译服务")
     success: bool = Field(..., description="是否成功")
+
+# ===== Agent Skills Center Schemas =====
+
+class SkillCreate(BaseModel):
+    """创建Skill请求"""
+    name: str = Field(..., min_length=1, max_length=100)
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    version: str = Field(..., pattern=r'^\d+\.\d+\.\d+$')
+    content: str
+    category: Optional[str] = "general"
+    tags: Optional[List[str]] = []
+    triggers: Optional[List[str]] = []
+    author: Optional[str] = None
+
+class SkillUpdate(BaseModel):
+    """更新Skill请求"""
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    version: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    triggers: Optional[List[str]] = None
+    status: Optional[str] = None
+
+class SkillResponse(BaseModel):
+    """Skill响应"""
+    id: UUID
+    name: str
+    display_name: Optional[str]
+    description: Optional[str]
+    version: str
+    source_type: str
+    category: Optional[str]
+    tags: Optional[List[str]]
+    triggers: Optional[List[str]]
+    status: str
+    author: Optional[str]
+    activation_count: int
+    download_count: int
+    rating: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class PaginatedSkillsResponse(BaseModel):
+    """分页Skill响应"""
+    items: List[SkillResponse]
+    total: int
+
+class AgentConfigCreate(BaseModel):
+    """创建Agent配置请求"""
+    name: str = Field(..., min_length=1, max_length=100)
+    display_name: Optional[str] = None
+    template_id: Optional[UUID] = None
+    instruction: str
+    model_config_id: Optional[UUID] = None
+    skill_ids: Optional[List[UUID]] = []
+    tool_ids: Optional[List[UUID]] = []
+    user_id: Optional[str] = None
+    agent_metadata: Optional[Dict] = {}
+
+class AgentConfigUpdate(BaseModel):
+    """更新Agent配置请求"""
+    display_name: Optional[str] = None
+    instruction: Optional[str] = None
+    model_config_id: Optional[UUID] = None
+    status: Optional[str] = None
+    agent_metadata: Optional[Dict] = None
+
+class AgentConfigResponse(BaseModel):
+    """Agent配置响应"""
+    id: UUID
+    name: str
+    display_name: Optional[str]
+    instruction: str
+    status: str
+    is_default: bool
+    user_id: Optional[str]
+    template_id: Optional[UUID]
+    model_config_id: Optional[UUID]
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class PaginatedAgentConfigsResponse(BaseModel):
+    """分页Agent配置响应"""
+    items: List[AgentConfigResponse]
+    total: int
+
+class ToolCreate(BaseModel):
+    """创建Tool请求"""
+    name: str = Field(..., min_length=1, max_length=100)
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    tool_type: str = Field(..., pattern=r'^(mcp|python|api)$')
+    category: Optional[str] = None
+    source_config: Optional[Dict] = {}
+    schema_config: Optional[Dict] = {}
+
+class ToolUpdate(BaseModel):
+    """更新Tool请求"""
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    source_config: Optional[Dict] = None
+    schema_config: Optional[Dict] = None
+    status: Optional[str] = None
+
+class ToolResponse(BaseModel):
+    """Tool响应"""
+    id: UUID
+    name: str
+    display_name: Optional[str]
+    description: Optional[str]
+    tool_type: str
+    category: Optional[str]
+    source_config: Optional[Dict]
+    schema_config: Optional[Dict]
+    status: str
+    usage_count: int
+    tool_metadata: Optional[Dict]
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class PaginatedToolsResponse(BaseModel):
+    """分页Tool响应"""
+    items: List[ToolResponse]
+    total: int
+

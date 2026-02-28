@@ -8,22 +8,13 @@ from typing import Dict, Any, List, Callable, Optional
 from functools import wraps
 from core.logger import LoggerFactory
 from services.mcp_service import get_mcp_service
+from tools.tool_call_guard import (
+    MAX_CALLS_PER_TOOL,
+    check_and_increment_tool_call,
+    reset_tool_call_counts
+)
 
 logger = LoggerFactory.get_service_logger(__name__)
-
-# 全局工具调用计数器（按工具名统计，用于防止无限循环）
-_tool_call_counts: Dict[str, int] = {}
-MAX_CALLS_PER_TOOL = 5  # 每个工具最多调用5次（每次对话会话）
-
-def reset_tool_call_counts():
-    """
-    重置所有工具调用计数器
-    应该在每次新对话开始时调用此函数
-    """
-    global _tool_call_counts
-    if _tool_call_counts:
-        logger.debug(f"重置工具调用计数器（之前有 {len(_tool_call_counts)} 个工具的计数）")
-        _tool_call_counts.clear()
 
 def _create_mcp_tool_wrapper(tool_name: str, tool_schema: Dict[str, Any]) -> Callable:
     """
@@ -86,23 +77,9 @@ def _create_mcp_tool_wrapper(tool_name: str, tool_schema: Dict[str, Any]) -> Cal
         """
         内部函数：实际执行MCP工具调用
         """
-        # 检查调用次数限制（使用全局计数器，按工具名统计）
-        _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
-        current_count = _tool_call_counts[tool_name]
-        
-        if current_count > MAX_CALLS_PER_TOOL:
-            error_msg = (
-                f"Error: Tool '{tool_name}' has been called {current_count} times "
-                f"(max: {MAX_CALLS_PER_TOOL}). This indicates an infinite loop or repeated parameter errors.\n\n"
-                f"Common causes:\n"
-                f"1. Parameter name mismatch (e.g., using 'q' instead of 'query')\n"
-                f"2. Missing required parameters\n"
-                f"3. Invalid parameter values\n\n"
-                f"Required parameters: {required if required else 'None'}\n"
-                f"Available parameters: {list(properties.keys())}\n\n"
-                f"Please review the tool documentation and use correct parameter names and values."
-            )
-            logger.error(f"工具 {tool_name} 调用次数超限: {current_count} > {MAX_CALLS_PER_TOOL}")
+        # 检查调用次数限制（基于会话级全局计数器）
+        allowed, current_count, error_msg = check_and_increment_tool_call(tool_name)
+        if not allowed:
             logger.error(f"工具 {tool_name} 可用参数: {list(properties.keys())}, 必需参数: {required}")
             return error_msg
         

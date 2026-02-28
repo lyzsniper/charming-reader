@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from api.endpoints import router as api_router
+from api.agent_skills_center import router as skills_center_router
 from rag.router import router as rag_router
 from core.logger import get_logger
 from core.exceptions import global_exception_handler, BaseAPIException
@@ -31,8 +32,10 @@ app.add_exception_handler(Exception, global_exception_handler)
 # 注册路由
 app.include_router(api_router)
 app.include_router(rag_router)
+app.include_router(skills_center_router, prefix="/api", tags=["Agent Skills Center"])
 
 logger.info("PaperAgent API 启动完成")
+logger.info("Agent Skills Center API 已注册 @ /api/*")
 
 @app.on_event("startup")
 async def startup_event():

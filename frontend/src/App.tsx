@@ -11,8 +11,10 @@ import { ThemeProvider } from './hooks/useTheme';
 // 懒加载组件以提升首屏加载速度
 const HomeView = lazy(() => import('./components/home/HomeView').then(m => ({ default: m.HomeView })));
 const WorkspaceView = lazy(() => import('./components/workspace/WorkspaceView').then(m => ({ default: m.WorkspaceView })));
+const SkillsMarket = lazy(() => import('./components/skills/SkillsMarket').then(m => ({ default: m.SkillsMarket })));
+const ConfigPanel = lazy(() => import('./components/config-panel/ConfigPanel').then(m => ({ default: m.ConfigPanel })));
 
-type ViewMode = 'home' | 'workspace';
+type ViewMode = 'home' | 'workspace' | 'skills-market' | 'config-panel';
 
 function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('home');
@@ -26,17 +28,29 @@ function App() {
   const [isModelsOpen, setIsModelsOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isSkillsMarketOpen, setIsSkillsMarketOpen] = useState(false);
+  const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
 
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [selectedAgentConfigId, setSelectedAgentConfigId] = useState<string | null>(null);
   const [useMultiAgent, setUseMultiAgent] = useState<boolean>(false);
 
-  const handleStartChat = (message?: string, file?: File, knowledgeBaseIds?: string[], sessionId?: string, modelId?: string | null, multiAgent?: boolean) => {
+  const handleStartChat = (
+    message?: string,
+    file?: File,
+    knowledgeBaseIds?: string[],
+    sessionId?: string,
+    modelId?: string | null,
+    multiAgent?: boolean,
+    agentConfigId?: string | null
+  ) => {
     setInitialMessage(message ?? null);
     setCurrentFile(file ?? null);
     setSelectedKnowledgeBaseIds(knowledgeBaseIds ?? []);
     setSelectedSessionId(sessionId ?? null);
     setSelectedModelId(modelId ?? null);
     setUseMultiAgent(multiAgent ?? false);
+    setSelectedAgentConfigId(agentConfigId ?? null);
     setViewMode('workspace');
     setConversationKey((key) => key + 1);
   };
@@ -47,11 +61,33 @@ function App() {
     setIsHistoryOpen(false);
     setIsSettingsOpen(false);
     setIsModelsOpen(false);
+    setIsSkillsMarketOpen(false);
+    setIsConfigPanelOpen(false);
     // 切换到首页
     setViewMode('home');
     setCurrentFile(null);
     setInitialMessage(null);
     setSelectedSessionId(null);
+  };
+
+  const handleOpenSkillsMarket = () => {
+    setIsKnowledgeOpen(false);
+    setIsHistoryOpen(false);
+    setIsSettingsOpen(false);
+    setIsModelsOpen(false);
+    setIsConfigPanelOpen(false);
+    setViewMode('skills-market');
+    setIsSkillsMarketOpen(true);
+  };
+
+  const handleOpenConfigPanel = () => {
+    setIsKnowledgeOpen(false);
+    setIsHistoryOpen(false);
+    setIsSettingsOpen(false);
+    setIsModelsOpen(false);
+    setIsSkillsMarketOpen(false);
+    setViewMode('config-panel');
+    setIsConfigPanelOpen(true);
   };
 
   const handleOpenModels = () => {
@@ -119,6 +155,8 @@ function App() {
         if (isHistoryOpen) setIsHistoryOpen(false);
         if (isSettingsOpen) setIsSettingsOpen(false);
         if (isModelsOpen) setIsModelsOpen(false);
+        if (isSkillsMarketOpen) setIsSkillsMarketOpen(false);
+        if (isConfigPanelOpen) setIsConfigPanelOpen(false);
       },
     },
   ]);
@@ -140,15 +178,21 @@ function App() {
                 if (isKnowledgeOpen) setIsKnowledgeOpen(false);
                 if (isHistoryOpen) setIsHistoryOpen(false);
                 if (isModelsOpen) setIsModelsOpen(false);
+                if (isSkillsMarketOpen) setIsSkillsMarketOpen(false);
+                if (isConfigPanelOpen) setIsConfigPanelOpen(false);
                 setIsSettingsOpen(true);
               }
             }}
             onOpenModels={handleOpenModels}
+            onOpenSkillsMarket={handleOpenSkillsMarket}
+            onOpenConfigPanel={handleOpenConfigPanel}
             onGoHome={handleGoHome}
             isKnowledgeOpen={isKnowledgeOpen}
             isHistoryOpen={isHistoryOpen}
             isSettingsOpen={isSettingsOpen}
             isModelsOpen={isModelsOpen}
+            isSkillsMarketOpen={isSkillsMarketOpen}
+            isConfigPanelOpen={isConfigPanelOpen}
             viewMode={viewMode}
           />
           
@@ -157,11 +201,17 @@ function App() {
             <Suspense fallback={<LoadingSpinner fullScreen text="加载中..." />}>
               {viewMode === 'home' ? (
                 <HomeView 
-                  onStartChat={handleStartChat} 
+                  onStartChat={handleStartChat}
+                  selectedAgentConfigId={selectedAgentConfigId}
+                  onAgentConfigChange={setSelectedAgentConfigId}
                   onOpenKnowledge={handleOpenKnowledge}
                   isHistoryOpen={isHistoryOpen}
                   onHistoryClose={() => setIsHistoryOpen(false)}
                 />
+              ) : viewMode === 'skills-market' ? (
+                <SkillsMarket />
+              ) : viewMode === 'config-panel' ? (
+                <ConfigPanel />
               ) : (
             <WorkspaceView
               file={currentFile}
@@ -173,6 +223,8 @@ function App() {
               initialKnowledgeBaseIds={selectedKnowledgeBaseIds}
               initialSessionId={selectedSessionId}
               initialModelId={selectedModelId}
+              selectedAgentConfigId={selectedAgentConfigId}
+              onAgentConfigChange={setSelectedAgentConfigId}
               initialUseMultiAgent={useMultiAgent}
               isHistoryOpen={isHistoryOpen}
               onHistoryClose={() => setIsHistoryOpen(false)}

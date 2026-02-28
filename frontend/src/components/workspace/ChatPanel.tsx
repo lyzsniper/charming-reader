@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ThinkingProcess } from './ThinkingProcess';
 import { api } from '@/services/api';
+import { agentSkillsApi } from '@/services/agentSkillsApi';
+import type { AgentConfigResponse } from '@/services/agentSkillsApi';
 import type { ChatResponse } from '@/services/api';
 import { KnowledgeBaseSelector } from '@/components/common/KnowledgeBaseSelector';
 import { ModelSelector } from '@/components/common/ModelSelector';
@@ -53,6 +55,8 @@ interface ChatPanelProps {
   uploadError?: string | null;
   initialSessionId?: string | null;
   initialModelId?: string | null;
+  selectedAgentConfigId?: string | null;
+  onAgentConfigChange?: (agentConfigId: string | null) => void;
   initialUseMultiAgent?: boolean;
   initialHistory?: Array<{ role: 'user' | 'agent' | 'model'; text: string; created_at?: string | null; sources?: any[] }>;
   initialFile?: File | null;
@@ -70,6 +74,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   uploadError,
   initialSessionId,
   initialModelId,
+  selectedAgentConfigId,
+  onAgentConfigChange,
   initialUseMultiAgent = false,
   initialHistory,
   initialFile,
@@ -90,10 +96,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [localKnowledgeBaseIds, setLocalKnowledgeBaseIds] = useState<string[]>(knowledgeBaseIds || []);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(initialModelId ?? null);
+  const [localSelectedAgentConfigId, setLocalSelectedAgentConfigId] = useState<string | null>(selectedAgentConfigId ?? null);
   const [useMultiAgent, setUseMultiAgent] = useState<boolean>(initialUseMultiAgent); // 多智能体模式开关
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [messageMenuOpen, setMessageMenuOpen] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null); // 跟踪已复制的消息
+  const [agentOptions, setAgentOptions] = useState<AgentConfigResponse[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasSentInitialRef = useRef(false); // 使用ref来跟踪，避免重复发送
@@ -111,6 +119,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       lastInitialFileRef.current = null; // 重置文件引用
     }
   }, [conversationKey]);
+
+  useEffect(() => {
+    if (selectedAgentConfigId !== undefined) {
+      setLocalSelectedAgentConfigId(selectedAgentConfigId ?? null);
+    }
+  }, [selectedAgentConfigId]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadAgents = async () => {
+      try {
+        const response = await agentSkillsApi.listAgentConfigs({
+          skip: 0,
+          limit: 100,
+          include_total: false,
+        });
+        const items = Array.isArray(response) ? response : response.items || [];
+        if (mounted) {
+          setAgentOptions(items);
+        }
+      } catch (error) {
+        if (mounted) {
+          showError('加载 Agent 列表失败');
+        }
+      }
+    };
+    loadAgents();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const intro: Message = {
@@ -319,6 +358,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           session_id: sessionId,
           user_id: 'default_user',
           model_id: selectedModelId || undefined,
+          agent_config_id: localSelectedAgentConfigId || undefined,
           knowledge_base_ids: localKnowledgeBaseIds.length > 0 ? localKnowledgeBaseIds : undefined,
           use_rag: localKnowledgeBaseIds.length > 0 ? true : undefined,
           onVectorizationStep: (step) => {
@@ -542,6 +582,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           message: contentOverride ?? content,
           session_id: sessionId,
           model_id: selectedModelId || undefined,
+          agent_config_id: localSelectedAgentConfigId || undefined,
           knowledge_base_ids: localKnowledgeBaseIds.length > 0 ? localKnowledgeBaseIds : undefined,
           use_rag: localKnowledgeBaseIds.length > 0 ? true : undefined,
           use_multi_agent: useMultiAgent,
@@ -1241,6 +1282,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               selectedId={selectedModelId}
               onSelectionChange={setSelectedModelId}
             />
+          </div>
+          <div className="flex-1">
+            <select
+              value={localSelectedAgentConfigId ?? ''}
+              onChange={(event) => {
+                const value = event.target.value || null;
+                setLocalSelectedAgentConfigId(value);
+                onAgentConfigChange?.(value);
+              }}
+              className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="选择 Agent 工具组"
+            >
+              <option value="">默认Agent工具组</option>
+              {agentOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.display_name || agent.name || agent.id}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex-1">
             <KnowledgeBaseSelector

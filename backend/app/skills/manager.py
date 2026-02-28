@@ -1,9 +1,11 @@
 """
 Skills Manager - 统一的技能管理接口
 整合 Loader, Registry, Activator 提供高层 API
+支持混合模式：从文件系统和数据库加载Skills
 """
 
 from typing import List, Dict, Optional
+from sqlalchemy.orm import Session
 from .loader import SkillLoader
 from .registry import SkillRegistry, Skill
 from .activator import SkillActivator
@@ -41,9 +43,14 @@ class SkillsManager:
         
         self._initialized = True
     
-    def _load_all_skills(self):
-        """加载所有技能的元数据到注册表"""
+    def _load_all_skills(self, db: Optional[Session] = None):
+        """
+        加载所有技能的元数据到注册表
+        混合模式：先加载文件系统Skills，再加载数据库Skills
+        """
         print(f"[SkillsManager] Starting to load skills from: {self.loader.skills_dir}")
+        
+        # 1. 从文件系统加载
         skills_metadata = self.loader.scan_skills()
         print(f"[SkillsManager] Scanned {len(skills_metadata)} skills from filesystem")
         
@@ -57,7 +64,34 @@ class SkillsManager:
             )
             print(f"[SkillsManager] Registered skill: {metadata.name} ({len(metadata.triggers)} triggers)")
         
-        print(f"[SkillsManager] Total loaded and registered: {len(skills_metadata)} skills")
+        # 2. 从数据库加载（如果提供了db session）
+        if db:
+            try:
+                from dao.skill_dao import SkillDAO
+                db_skills = SkillDAO.list_all(db, status='active')
+                print(f"[SkillsManager] Found {len(db_skills)} skills in database")
+                
+                for db_skill in db_skills:
+                    # 检查是否已从文件系统加载（文件系统优先级更高）
+                    existing_skill = self.registry.get_skill(db_skill.name)
+                    if existing_skill and existing_skill.file_path:
+                        print(f"[SkillsManager] Skipping database skill {db_skill.name} (filesystem version exists)")
+                        continue
+                    
+                    # 注册数据库中的技能
+                    self.registry.register_skill(
+                        name=db_skill.name,
+                        description=db_skill.description or "",
+                        triggers=db_skill.triggers or [],
+                        version=db_skill.version,
+                        file_path=None  # 标记为数据库来源
+                    )
+                    print(f"[SkillsManager] Registered database skill: {db_skill.name}")
+            except Exception as e:
+                print(f"[SkillsManager] Error loading skills from database: {e}")
+        
+        total_skills = len(self.registry.get_all_skills())
+        print(f"[SkillsManager] Total loaded and registered: {total_skills} skills")
         
         # 验证GitHub skill是否加载
         github_skill = self.registry.get_skill("github-integration")
@@ -177,8 +211,13 @@ class SkillsManager:
             "activator": self.activator.get_activation_summary()
         }
     
-    def reload_skills(self):
-        """重新加载所有技能"""
+    def reload_skills(self, db: Optional[Session] = None):
+        """
+        重新加载所有技能
+        
+        Args:
+            db: 数据库会话（可选）
+        """
         # 清空注册表
         self.registry.clear()
         
@@ -186,7 +225,68 @@ class SkillsManager:
         self.loader.clear_cache()
         
         # 重新加载
-        self._load_all_skills()
+        self._load_all_skills(db)
+    
+    async def sync_with_database(self, db: Session) -> Dict:
+        """
+        与数据库同步Skills
+        
+        Args:
+            db: 数据库会话
+        
+        Returns:
+            同步结果统计
+        """
+        from services.skill_service import skill_service
+        result = await skill_service.sync_from_filesystem(db)
+        
+        # 重新加载技能
+        self.reload_skills(db)
+        
+        return result
+    
+    async def activate_skill_with_logging(
+        self,
+        skill_name: str,
+        db: Optional[Session] = None,
+        session_id: Optional[str] = None,
+        query_text: Optional[str] = None
+    ) -> bool:
+        """
+        激活技能并记录到数据库
+        
+        Args:
+            skill_name: 技能名称
+            db: 数据库会话
+            session_id: 会话ID
+            query_text: 查询文本
+        
+        Returns:
+            是否成功激活
+        """
+        # 激活技能
+        success = self.activator.activate_skill(skill_name)
+        
+        # 如果激活成功且提供了数据库会话，记录日志
+        if success and db and session_id:
+            try:
+                from services.runtime_monitor_service import runtime_monitor_service
+                from dao.skill_dao import SkillDAO
+                
+                # 获取技能ID
+                db_skill = SkillDAO.get_by_name(db, skill_name)
+                if db_skill:
+                    await runtime_monitor_service.record_skill_activation(
+                        db=db,
+                        skill_id=db_skill.id,
+                        session_id=session_id,
+                        activation_reason="manual",
+                        query_text=query_text
+                    )
+            except Exception as e:
+                print(f"[SkillsManager] Error logging skill activation: {e}")
+        
+        return success
     
     def reset(self):
         """重置技能系统（停用所有技能）"""

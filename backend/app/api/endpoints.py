@@ -189,6 +189,7 @@ async def _chat_stream(
     session_id: Optional[str],
     user_id: str,
     db: Session,
+    agent_config_id: Optional[UUID] = None,
     knowledge_base_ids: Optional[List[UUID]] = None,
     use_rag: bool = False,
     rag_top_k: int = 5,
@@ -226,6 +227,7 @@ async def _chat_stream(
                 input_text=message,
                 user_id=user_id,
                 session_id=session_id,
+                agent_config_id=agent_config_id,
                 knowledge_base_ids=knowledge_base_ids,
                 use_rag=use_rag,
                 rag_top_k=rag_top_k,
@@ -348,6 +350,7 @@ async def _chat_with_file_stream(
     session_id: Optional[str],
     user_id: str,
     db: Session,
+    agent_config_id: Optional[UUID] = None,
     knowledge_base_ids: Optional[List[UUID]] = None,
     use_rag: bool = False
 ) -> AsyncGenerator[str, None]:
@@ -527,6 +530,7 @@ async def _chat_with_file_stream(
                     input_text=message,
                     user_id=user_id,
                     session_id=session_id,
+                    agent_config_id=agent_config_id,
                     knowledge_base_ids=kb_ids_final,
                     use_rag=use_rag_final,
                     rag_top_k=5,
@@ -679,6 +683,7 @@ async def chat(
     logger.info(f"收到聊天请求: message={req.message[:100]}...")
     logger.info(f"参数: session_id={req.session_id}, user_id={req.user_id}")
     logger.info(f"知识库: kb_ids={req.knowledge_base_ids}, use_rag={req.use_rag}")
+    logger.info(f"Agent配置: agent_config_id={req.agent_config_id}")
     logger.info("=" * 80)
     
     try:
@@ -714,6 +719,7 @@ async def chat(
                 session_id=session_id,
                 user_id=user_id,
                 db=db,
+                agent_config_id=req.agent_config_id,
                 knowledge_base_ids=kb_ids,
                 use_rag=req.use_rag,
                 rag_top_k=req.rag_top_k,
@@ -780,6 +786,7 @@ async def chat_form(
     message: str = Form(...),
     session_id: Optional[str] = Form(None),
     user_id: str = Form("default_user"),
+    agent_config_id: Optional[str] = Form(None),
     knowledge_base_ids: Optional[str] = Form(None),  # JSON字符串
     use_rag: bool = Form(False),
     rag_top_k: int = Form(5),
@@ -803,6 +810,7 @@ async def chat_form(
     logger.info("=" * 80)
     logger.info(f"收到聊天请求: message={message[:100]}...")
     logger.info(f"参数: session_id={session_id}, user_id={user_id}, has_file={file is not None}")
+    logger.info(f"Agent配置: agent_config_id={agent_config_id}")
     logger.info("=" * 80)
     
     # 如果有文件上传，使用流式响应
@@ -827,8 +835,24 @@ async def chat_form(
         else:
             use_rag_for_stream = use_rag
         
+        parsed_agent_config_id = None
+        if agent_config_id:
+            try:
+                parsed_agent_config_id = UUID(agent_config_id)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="agent_config_id 格式无效")
+
         return StreamingResponse(
-            _chat_with_file_stream(file, message, session_id, user_id, db, kb_ids_for_stream, use_rag_for_stream),
+            _chat_with_file_stream(
+                file,
+                message,
+                session_id,
+                user_id,
+                db,
+                parsed_agent_config_id,
+                kb_ids_for_stream,
+                use_rag_for_stream
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -847,6 +871,13 @@ async def chat_form(
             except:
                 pass
         
+        parsed_agent_config_id = None
+        if agent_config_id:
+            try:
+                parsed_agent_config_id = UUID(agent_config_id)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="agent_config_id 格式无效")
+
         # 1. 自动创建 session_id（如果未提供）
         if not session_id:
             session_id = str(uuid4())
@@ -867,10 +898,12 @@ async def chat_form(
             input_text=message,
             user_id=user_id,
             session_id=session_id,
+            agent_config_id=parsed_agent_config_id,
             knowledge_base_ids=kb_ids,
             use_rag=use_rag,
             rag_top_k=rag_top_k,
-            enable_rerank=enable_rerank
+            enable_rerank=enable_rerank,
+            db=db
         )
         
         # 转换技能信息格式
@@ -2136,10 +2169,12 @@ async def chat_with_agent(
             input_text=req.message,
             user_id=req.user_id or "default_user",
             session_id=req.session_id,
+            agent_config_id=getattr(req, "agent_config_id", None),
             knowledge_base_ids=req.knowledge_base_ids,
             use_rag=req.use_rag if hasattr(req, 'use_rag') else False,
             rag_top_k=5,
-            enable_rerank=True
+            enable_rerank=True,
+            db=db
         )
 
         return ChatResponse(

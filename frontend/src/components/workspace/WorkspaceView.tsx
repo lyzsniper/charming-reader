@@ -23,6 +23,8 @@ interface WorkspaceViewProps {
   initialKnowledgeBaseIds?: string[];
   initialSessionId?: string | null;
   initialModelId?: string | null;
+  selectedAgentConfigId?: string | null;
+  onAgentConfigChange?: (agentConfigId: string | null) => void;
   initialUseMultiAgent?: boolean;
   isHistoryOpen?: boolean;
   onHistoryOpen?: () => void;
@@ -41,6 +43,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   initialKnowledgeBaseIds = [],
   initialSessionId: externalInitialSessionId,
   initialModelId,
+  selectedAgentConfigId,
+  onAgentConfigChange,
   initialUseMultiAgent = false,
   isHistoryOpen: externalIsHistoryOpen,
   onHistoryOpen,
@@ -247,6 +251,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   uploadError={uploadError}
                   initialSessionId={selectedSessionId}
                   initialModelId={initialModelId}
+                  selectedAgentConfigId={selectedAgentConfigId}
+                  onAgentConfigChange={onAgentConfigChange}
                   initialUseMultiAgent={initialUseMultiAgent}
                   initialHistory={initialHistory}
                   initialFile={selectedSessionId ? null : file}
@@ -300,6 +306,8 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 uploadError={uploadError}
                 initialSessionId={selectedSessionId}
                 initialModelId={initialModelId}
+                selectedAgentConfigId={selectedAgentConfigId}
+                onAgentConfigChange={onAgentConfigChange}
                 initialUseMultiAgent={initialUseMultiAgent}
                 initialHistory={initialHistory}
                 initialFile={selectedSessionId ? null : file}

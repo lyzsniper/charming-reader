@@ -1,5 +1,5 @@
 import React, { useRef, useCallback } from 'react';
-import { BookOpen, MessageSquare, Settings, History, Brain } from 'lucide-react';
+import { BookOpen, MessageSquare, Settings, History, Brain, Sparkles, Sliders } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -9,12 +9,16 @@ interface SidebarProps {
   onOpenHistory: () => void;
   onOpenSettings: () => void;
   onOpenModels?: () => void;
+  onOpenSkillsMarket?: () => void;
+  onOpenConfigPanel?: () => void;
   onGoHome: () => void;
   isKnowledgeOpen?: boolean;
   isHistoryOpen?: boolean;
   isSettingsOpen?: boolean;
   isModelsOpen?: boolean;
-  viewMode?: 'home' | 'workspace';
+  isSkillsMarketOpen?: boolean;
+  isConfigPanelOpen?: boolean;
+  viewMode?: 'home' | 'workspace' | 'skills-market' | 'config-panel';
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ 
@@ -22,11 +26,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenHistory, 
   onOpenSettings,
   onOpenModels,
+  onOpenSkillsMarket,
+  onOpenConfigPanel,
   onGoHome,
   isKnowledgeOpen = false,
   isHistoryOpen = false,
   isSettingsOpen = false,
   isModelsOpen = false,
+  isSkillsMarketOpen = false,
+  isConfigPanelOpen = false,
   viewMode = 'home',
 }) => {
   // 使用 ref 来跟踪上次点击时间，实现简单的防抖
@@ -52,6 +60,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleHistoryClick = createDebouncedHandler('history', onOpenHistory);
   const handleSettingsClick = createDebouncedHandler('settings', onOpenSettings);
   const handleModelsClick = createDebouncedHandler('models', onOpenModels || (() => {}));
+  const handleSkillsMarketClick = createDebouncedHandler('skills-market', onOpenSkillsMarket || (() => {}));
+  const handleConfigPanelClick = createDebouncedHandler('config-panel', onOpenConfigPanel || (() => {}));
   const handleGoHomeClick = createDebouncedHandler('home', onGoHome);
 
   // Chat 按钮在 workspace 模式下激活
@@ -126,6 +136,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label="Models" 
           active={isModelsOpen}
           onClick={handleModelsClick} 
+        />
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.3 }}
+        >
+        <SidebarBtn 
+          icon={<Sparkles className="w-5 h-5" />} 
+          label="Skills Market" 
+          active={isSkillsMarketOpen}
+          onClick={handleSkillsMarketClick} 
+        />
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.35 }}
+        >
+        <SidebarBtn 
+          icon={<Sliders className="w-5 h-5" />} 
+          label="Config Panel" 
+          active={isConfigPanelOpen}
+          onClick={handleConfigPanelClick} 
         />
         </motion.div>
       </div>

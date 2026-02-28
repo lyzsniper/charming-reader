@@ -10,9 +10,13 @@ from services.chat_service import ChatService
 from services.model_config_service import ModelConfigurationService
 from agents.paper_agent import create_agent_with_skills
 from skills.manager import skills_manager
-from tools.mcp_tool_adapter import reset_tool_call_counts
+from tools.tool_call_guard import (
+    reset_tool_call_counts,
+    set_current_session_id,
+)
 from typing import Optional, List, Dict, Any, Tuple, Callable, Awaitable
 from uuid import UUID, uuid4
+from sqlalchemy.orm import Session
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,11 +43,15 @@ async def run_agent_with_rag(
     input_text: str,
     user_id: str = "default_user",
     session_id: Optional[str] = None,
+    agent_config_id: Optional[UUID] = None,
     knowledge_base_ids: Optional[List[UUID]] = None,
     use_rag: bool = False,
     rag_top_k: int = 5,
     enable_rerank: bool = True,
-    session_id_for_temp_files: Optional[str] = None
+    session_id_for_temp_files: Optional[str] = None,
+    model_id: Optional[UUID] = None,
+    db: Optional[Session] = None,
+    use_multi_agent: bool = False
 ) -> Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]], Optional[str]]:
     """
     运行智能体，支持 RAG 检索和 Session 管理
@@ -65,12 +73,19 @@ async def run_agent_with_rag(
         - activated_skills: 激活的技能列表
         - skills_prompt: 注入到Agent的技能提示词内容
     """
+    # 指定了 agent_config_id 时，强制使用单智能体模式
+    if agent_config_id and use_multi_agent:
+        logger.info("检测到 agent_config_id，已关闭多智能体模式")
+        use_multi_agent = False
+
     # 如果没有传入 session_id，自动生成一个
     if not session_id:
         session_id = str(uuid4())
         logger.info(f"自动创建新会话: session_id={session_id}")
+        reset_tool_call_counts(session_id)
     else:
         logger.info(f"使用已有会话: session_id={session_id}")
+    set_current_session_id(session_id)
     
     logger.info(f"用户消息: user_id={user_id}, message={input_text[:100]}...")
     
@@ -156,7 +171,11 @@ async def run_agent_with_rag(
             from agents.coordinator_agent import create_coordinator_agent
             agent = await create_coordinator_agent(model_config=model_config)
         else:
-            agent = await create_agent_with_skills(model_config=model_config)
+            agent = await create_agent_with_skills(
+                model_config=model_config,
+                db_session=db,
+                agent_config_id=agent_config_id
+            )
     active_skills = skills_manager.get_active_skills()
     active_skills_count = len(active_skills)
     if active_skills_count > 0:
@@ -408,6 +427,7 @@ async def run_agent_with_rag_stream(
     input_text: str,
     user_id: str = "default_user",
     session_id: Optional[str] = None,
+    agent_config_id: Optional[UUID] = None,
     knowledge_base_ids: Optional[List[UUID]] = None,
     use_rag: bool = False,
     rag_top_k: int = 5,
@@ -456,14 +476,20 @@ async def run_agent_with_rag_stream(
         if yield_event:
             await yield_event(event_type, event_data)
     
+    # 指定了 agent_config_id 时，强制使用单智能体模式
+    if agent_config_id and use_multi_agent:
+        logger.info("检测到 agent_config_id，已关闭多智能体模式")
+        use_multi_agent = False
+
     # 如果没有传入 session_id，自动生成一个
     if not session_id:
         session_id = str(uuid4())
         logger.info(f"自动创建新会话: session_id={session_id}")
         # 新会话时重置工具调用计数器
-        reset_tool_call_counts()
+        reset_tool_call_counts(session_id)
     else:
         logger.info(f"使用已有会话: session_id={session_id}")
+    set_current_session_id(session_id)
     
     logger.info(f"用户消息: user_id={user_id}, message={input_text[:100]}...")
     
@@ -620,7 +646,11 @@ async def run_agent_with_rag_stream(
             active_skills = []
             skills_prompt = None
         else:
-            agent = await create_agent_with_skills(model_config=model_config)
+            agent = await create_agent_with_skills(
+                model_config=model_config,
+                db_session=db,
+                agent_config_id=agent_config_id
+            )
             active_skills = skills_manager.get_active_skills()
             active_skills_count = len(active_skills)
             if active_skills_count > 0:
@@ -856,7 +886,7 @@ async def run_agent_with_rag_stream(
                     logger.debug(f"跳过用户消息")
                     continue
                 
-                # 处理工具调用事件（可能在model/assistant事件中的function_call，或在tool事件中）
+            # 处理工具调用事件（可能在model/assistant事件中的function_call，或在tool事件中）
                 tool_call_detected = False
                 if hasattr(event, 'content') and event.content:
                     if hasattr(event.content, 'parts') and event.content.parts:
@@ -868,7 +898,7 @@ async def run_agent_with_rag_stream(
                                     tool_arguments = {}
                                     if hasattr(part.function_call, 'args'):
                                         tool_arguments = dict(part.function_call.args) if part.function_call.args else {}
-                                    
+
                                     # 发送工具调用开始事件
                                     if tool_name:
                                         await _yield("tool_call", {
@@ -1165,6 +1195,11 @@ async def run_agent_with_rag_stream(
         logger.warning("未获取到智能体回复")
         return "抱歉，没有收到智能体的回复。", session_id, rag_sources, activated_skills, skills_prompt
         
+    except asyncio.CancelledError as e:
+        logger.warning(f"流式任务已取消: {str(e)}")
+        # 返回友好提示，避免无限工具调用导致前端挂起
+        cancel_message = "工具调用次数过多，已停止当前对话。请调整问题或检查工具参数后再试。"
+        return cancel_message, session_id, rag_sources, activated_skills, skills_prompt
     except ValueError as e:
         error_msg = str(e)
         # 检查是否是工具调用相关的错误（工具不存在等）

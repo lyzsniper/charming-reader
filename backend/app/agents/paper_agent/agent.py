@@ -7,6 +7,10 @@ from core.config import settings
 from core.logger import LoggerFactory
 from skills.manager import skills_manager
 from typing import List, Callable, Optional, Dict, Any
+from core.db import SessionLocal
+from dao.tool_dao import ToolDAO
+from dao.agent_config_dao import AgentConfigDAO
+from tools.runtime_tool_factory import build_tool_callable
 
 logger = LoggerFactory.get_service_logger(__name__)
 
@@ -21,7 +25,11 @@ Do not invent tool names. If a tool doesn't exist or fails, gracefully handle th
 Tool failures should not block the conversation - provide helpful feedback and continue with available methods."""
 
 
-async def create_agent_with_skills(model_config: Optional[dict] = None) -> Agent:
+async def create_agent_with_skills(
+    model_config: Optional[dict] = None,
+    db_session: Optional[Any] = None,
+    agent_config_id: Optional[Any] = None
+) -> Agent:
     """
     创建带有激活技能的 Agent
     
@@ -55,6 +63,41 @@ async def create_agent_with_skills(model_config: Optional[dict] = None) -> Agent
             logger.info(f"✓ 已加载 {len(github_tools)} 个GitHub MCP工具")
         except Exception as e:
             logger.error(f"加载GitHub MCP工具失败: {type(e).__name__}: {e}")
+
+    # 从数据库加载Tools（用于配置中心创建的工具）
+    db_owned = False
+    if db_session is None:
+        db_session = SessionLocal()
+        db_owned = True
+    try:
+        # 优先使用指定Agent配置的工具，其次默认配置，最后加载所有active工具
+        default_agent = AgentConfigDAO.get_default(db_session)
+        tool_records = []
+        if agent_config_id:
+            agent_with_relations = AgentConfigDAO.get_by_id(db_session, agent_config_id, load_relations=True)
+            if agent_with_relations:
+                tool_records = [rel.tool for rel in agent_with_relations.agent_tools]
+            else:
+                logger.warning(f"未找到指定Agent配置: {agent_config_id}，将回退到默认配置")
+        if not tool_records and default_agent:
+            agent_with_relations = AgentConfigDAO.get_by_id(db_session, default_agent.id, load_relations=True)
+            if agent_with_relations:
+                tool_records = [rel.tool for rel in agent_with_relations.agent_tools]
+        if not tool_records:
+            tool_records = ToolDAO.list_all(db_session, status="active")
+
+        tool_callables = [build_tool_callable(tool) for tool in tool_records]
+        # 去重：避免与MCP工具重复
+        tool_map = {tool.__name__: tool for tool in tools}
+        for tool_callable in tool_callables:
+            if tool_callable.__name__ not in tool_map:
+                tool_map[tool_callable.__name__] = tool_callable
+        tools = list(tool_map.values())
+    except Exception as e:
+        logger.error(f"加载数据库工具失败: {type(e).__name__}: {e}")
+    finally:
+        if db_owned and db_session is not None:
+            db_session.close()
     
     # 使用传入的模型配置，如果没有则使用默认配置
     if model_config:

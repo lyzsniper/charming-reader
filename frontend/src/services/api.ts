@@ -32,6 +32,22 @@ export const API_ROUTES = {
   activeModelConfiguration: '/model-configurations/active',
   activateModelConfiguration: (id: string) => `/model-configurations/${id}/activate`,
   currentModelInfo: '/model-configurations/current/info',
+  // Agent Skills Center 相关接口
+  skillsList: '/skills',
+  skillDetail: (id: string) => `/skills/${id}`,
+  skillsPopular: '/skills/popular',
+  skillsSync: '/skills/sync',
+  agentConfigs: '/agent-configs',
+  agentConfigDetail: (id: string) => `/agent-configs/${id}`,
+  agentConfigSkills: (id: string) => `/agent-configs/${id}/skills`,
+  agentConfigTools: (id: string) => `/agent-configs/${id}/tools`,
+  agentConfigSkillRemove: (agentId: string, skillId: string) => `/agent-configs/${agentId}/skills/${skillId}`,
+  toolsList: '/tools',
+  toolDetail: (id: string) => `/tools/${id}`,
+  toolsDiscover: '/tools/discover',
+  runtimeActiveSkills: '/runtime/skills/active',
+  runtimeAgentStats: (id: string) => `/runtime/agents/${id}/stats`,
+  runtimeSkillLogs: (id: string) => `/runtime/skills/${id}/logs`,
 } as const;
 
 type Query = Record<string, string | number | boolean | null | undefined>;
@@ -214,6 +230,7 @@ interface ChatOptions {
   session_id?: string | null;
   user_id?: string | null;
   model_id?: string | null;
+  agent_config_id?: string | null;
   knowledge_base_ids?: string[] | null;
   use_rag?: boolean;
   rag_top_k?: number;
@@ -266,6 +283,7 @@ const chat = async (options: ChatOptions): Promise<{ abort: () => Promise<void> 
       session_id: options.session_id,
       user_id: options.user_id || 'default_user',
       model_id: options.model_id || undefined,
+      agent_config_id: options.agent_config_id || undefined,
       knowledge_base_ids: options.knowledge_base_ids,
       use_rag: options.use_rag,
       rag_top_k: options.rag_top_k,
@@ -442,6 +460,7 @@ interface ChatWithFileOptions {
   session_id?: string | null;
   user_id?: string | null;
   model_id?: string | null;
+  agent_config_id?: string | null;
   knowledge_base_ids?: string[] | null;
   use_rag?: boolean;
   rag_top_k?: number;
@@ -480,6 +499,9 @@ const chatWithFile = async (options: ChatWithFileOptions): Promise<{ abort: () =
   formData.append('user_id', options.user_id || 'default_user');
   if (options.model_id) {
     formData.append('model_id', options.model_id);
+  }
+  if (options.agent_config_id) {
+    formData.append('agent_config_id', options.agent_config_id);
   }
   if (options.knowledge_base_ids?.length) {
     formData.append('knowledge_base_ids', options.knowledge_base_ids.join(','));
