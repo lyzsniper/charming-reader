@@ -1,6 +1,6 @@
 # Components - UI组件库
 
-[根目录](../../../CLAUDE.md) > [frontend](../../CLAUDE.md) > [src](../CLAUDE.md) > **components**
+[根目录](../../../docs/CLAUDE.md) > [frontend](../../CLAUDE.md) > [src](../CLAUDE.md) > **components**
 
 ## 模块职责
 

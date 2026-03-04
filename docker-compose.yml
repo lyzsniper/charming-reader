@@ -1,75 +1,142 @@
-version: '3.8'
-
 services:
   db:
     image: pgvector/pgvector:pg16
-    ports:
-      - "35432:35432"
+    container_name: paperagent-db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: jensenlyz
-      POSTGRES_PASSWORD: 1014
+      POSTGRES_USER: paperagent
+      POSTGRES_PASSWORD: paperagent1014
       POSTGRES_DB: paperagent
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-paperagent} -d ${POSTGRES_DB:-paperagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - paperagent-net
 
   es:
     image: elasticsearch:8.11.1
+    container_name: paperagent-es
+    restart: unless-stopped
     environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "39200:9200"
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
     volumes:
       - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
     networks:
       - paperagent-net
 
   minio:
     image: minio/minio:latest
     container_name: paperagent-minio
-    ports:
-      - "39000:9000"   # MinIO API 端口
-      - "39001:9001"   # MinIO Web 控制台端口
+    restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: paperagent
-      MINIO_ROOT_PASSWORD: paperagent123
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-paperagent}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me_strong}
+    command: server /data --console-address ":9001"
+    ports:
+      - "39000:9000"
+      - "39001:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
     networks:
       - paperagent-net
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
 
-  backend:
-    build: 
+  migrate:
+    build:
       context: ./backend
       dockerfile: Dockerfile
-    ports:
-      - "18000:18000"
+    container_name: paperagent-migrate
+    working_dir: /app
     environment:
-      - DATABASE_URL=postgresql://jensenlyz:1014@db:35432/paperagent
-      - ELASTICSEARCH_URL=http://es:9200
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=paperagent
-      - MINIO_SECRET_KEY=paperagent123
-      - MINIO_BUCKET=paperagent-files
-      - OPENAI_API_KEY=${OPENAI_API_KEY} # For LiteLLM if needed, or other keys
-    volumes:
-      - ./backend:/app
+      DATABASE_URL: postgresql://paperagent:paperagent1014@db:5432/paperagent
+      ELASTICSEARCH_URL: http://es:9200
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-paperagent}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change_me_strong}
+      MINIO_BUCKET: ${MINIO_BUCKET:-paperagent-files}
     depends_on:
-      - db
-      - es
-      - minio
+      db:
+        condition: service_healthy
+    command: sh -c "alembic -c /app/alembic.ini upgrade head"
+    restart: "no"
     networks:
       - paperagent-net
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: paperagent-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://paperagent:paperagent1014@db:5432/paperagent
+      ELASTICSEARCH_URL: http://es:9200
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-paperagent}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change_me_strong}
+      MINIO_BUCKET: ${MINIO_BUCKET:-paperagent-files}
+      MINIO_SECURE: "false"
+      MINIO_PUBLIC_ENDPOINT: 127.0.0.1:39000
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      QWEN_API_KEY: sk-cd56dabdcb3f4a55b2117493385b6bfa
+      DEEPSEEK_API_KEY: sk-cd56dabdcb3f4a55b2117493385b6bfa
+      GLM_API_KEY: 5c7354f232cd43ddb5de5d49d1f2a12d.7FWkazXBCKVFgRIh
+      GITHUB_MCP_TOKEN: ${GITHUB_MCP_TOKEN:-}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "18000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      es:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+    networks:
+      - paperagent-net
+
+  frontend:
+    image: node:20-alpine
+    container_name: paperagent-frontend
+    restart: unless-stopped
+    working_dir: /app/frontend
+    environment:
+      CI: "true"
+      VITE_API_BASE_URL: http://127.0.0.1:18000
+      VITE_WS_URL: ws://127.0.0.1:18000
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm exec vite build && pnpm exec vite preview --host 0.0.0.0 --port 80"
+    volumes:
+      - ./:/app
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - paperagent-net
 
 networks:
   paperagent-net:
@@ -79,4 +146,3 @@ volumes:
   postgres_data:
   es_data:
   minio_data:
-

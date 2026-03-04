@@ -1,6 +1,6 @@
 # Paper Analysis Skill - 论文分析技能
 
-[根目录](../../../CLAUDE.md) > [.claude/skills](../CLAUDE.md) > **paper-analysis**
+[根目录](../../../docs/CLAUDE.md) > [.claude/skills](../CLAUDE.md) > **paper-analysis**
 
 ## 技能职责
 

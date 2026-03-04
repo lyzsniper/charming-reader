@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 revision: str = '12_add_chat_attachments'
 down_revision: Union[str, None] = '11a67ea94371'
 branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = '9_add_chat_tables'
 
 
 def upgrade() -> None:

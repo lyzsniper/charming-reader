@@ -1,6 +1,6 @@
 # RAG - 检索增强生成引擎
 
-[根目录](../../../CLAUDE.md) > [backend](../../CLAUDE.md) > **rag**
+[根目录](../../../docs/CLAUDE.md) > [backend](../../CLAUDE.md) > **rag**
 
 ## 模块职责
 

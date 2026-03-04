@@ -1,6 +1,6 @@
 # Core - 核心模块
 
-[根目录](../../../CLAUDE.md) > [backend](../../CLAUDE.md) > [app](../CLAUDE.md) > **core**
+[根目录](../../../docs/CLAUDE.md) > [backend](../../CLAUDE.md) > [app](../CLAUDE.md) > **core**
 
 ## 模块职责
 

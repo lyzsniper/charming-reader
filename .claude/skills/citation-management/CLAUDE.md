@@ -1,6 +1,6 @@
 # Citation Management Skill - 引文管理技能
 
-[根目录](../../../CLAUDE.md) > [.claude/skills](../CLAUDE.md) > **citation-management**
+[根目录](../../../docs/CLAUDE.md) > [.claude/skills](../CLAUDE.md) > **citation-management**
 
 ## 技能职责
 

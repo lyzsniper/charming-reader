@@ -1,6 +1,6 @@
 # Literature Review Skill - 文献综述技能
 
-[根目录](../../../CLAUDE.md) > [.claude/skills](../CLAUDE.md) > **literature-review**
+[根目录](../../../docs/CLAUDE.md) > [.claude/skills](../CLAUDE.md) > **literature-review**
 
 ## 技能职责
 

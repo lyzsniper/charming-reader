@@ -1,6 +1,6 @@
 # Skills - 技能系统
 
-[根目录](../../../CLAUDE.md) > [backend](../../CLAUDE.md) > **skills**
+[根目录](../../../docs/CLAUDE.md) > [backend](../../CLAUDE.md) > **skills**
 
 ## 模块职责
 
